@@ -1,0 +1,130 @@
+PS99 DISCORD BOT — SERVER SETUP GUIDE
+========================================
+This guide is for server admins/moderators who want to add the bot to
+their own Discord server. It assumes the bot is already running somewhere
+(see SETUP-FILES.txt if you're the one hosting it). If someone else hosts
+the bot and just gave you an invite link, skip to step 2.
+
+
+1. INVITE THE BOT (bot owner does this once per server)
+------------------------------------------------------------
+Build an invite link using the bot's Client ID:
+
+    https://discord.com/api/oauth2/authorize?client_id=YOUR_CLIENT_ID&permissions=2147567616&scope=bot%20applications.commands
+
+Replace YOUR_CLIENT_ID with the bot's Client ID (from the Discord Developer
+Portal, OAuth2 tab). The permissions value above grants:
+    - Send Messages
+    - Embed Links
+    - Read Message History
+    - Use Application Commands
+
+Open that link, pick your server, and authorize it. You need "Manage
+Server" permission in the Discord server to add bots.
+
+
+2. TURN ON DEVELOPER MODE (needed to copy channel/server IDs)
+-------------------------------------------------------------------
+1. Discord Settings (gear icon) > Advanced
+2. Toggle on "Developer Mode"
+This lets you right-click any channel and select "Copy Channel ID".
+
+
+3. CREATE CHANNELS FOR THE FEEDS YOU WANT
+----------------------------------------------
+The bot can post five different feeds. You don't need all of them — only
+configure the ones you want. Suggested channel names:
+
+    #huge-rates          Hourly hatch-rate updates for Huge pets
+    #titanic-rates        Hourly hatch-rate updates for Titanic pets
+    #gargantuan-rates      Hourly hatch-rate updates for Gargantuan pets
+    #rap-alerts           Big RAP swings (+/-200%) on Huge/Titanic/Gargantuan
+    #exists-alerts         Sudden exists spikes (2x+) on Huge/Titanic/Gargantuan
+    #clan-top10            Top 10 clans, auto-updated every 10 minutes
+    #league-top10           Top 10 league standings, auto-updated every 10 minutes
+
+You can reuse one channel for multiple feeds, or split every feed into its
+own channel — whatever fits your server.
+
+
+4. CONFIGURE THE BOT WITH /config
+--------------------------------------
+You need "Manage Server" permission in Discord to use /config — regular
+members can't change the bot's settings.
+
+Type /config set in any channel, then fill in the two options:
+    type     — pick from: huge, titanic, gargantuan, rap-alert, exists-alert,
+               clan-top10, league-top10
+    channel  — pick the channel you want that feed posted to
+
+Repeat for each feed you want. Example:
+
+    /config set type: huge channel: #huge-rates
+    /config set type: titanic channel: #titanic-rates
+    /config set type: gargantuan channel: #gargantuan-rates
+    /config set type: rap-alert channel: #rap-alerts
+    /config set type: exists-alert channel: #exists-alerts
+    /config set type: clan-top10 channel: #clan-top10
+    /config set type: league-top10 channel: #league-top10
+
+To check what's currently configured:
+
+    /config view
+
+To turn a feed off:
+
+    /config clear type: rap-alert
+
+To wipe everything and start over:
+
+    /config reset
+
+
+5. WHAT HAPPENS NEXT
+------------------------
+- Hatch-rate feeds (huge/titanic/gargantuan) recalculate every 10 minutes
+  and show the EXACT number hatched in the trailing 60 minutes (e.g. at
+  7:10 it shows 6:10-7:10, at 7:20 it shows 6:20-7:20, and so on). This is
+  an exact count, not an estimate — it only posts once a full hour of
+  history has built up, so expect no posts for the first ~50-60 minutes
+  after the bot starts.
+- Clan Top 10 and League Top 10 post automatically every 10 minutes,
+  always (not conditional on a change).
+- Alert feeds (rap-alert, exists-alert) only post WHEN a threshold is
+  crossed — they'll stay quiet most of the time, that's normal. The
+  exists-alert still compares against the previous 10-minute snapshot
+  (not the trailing hour), since it's meant to catch sudden short-term
+  spikes.
+- After the bot (re)starts, or right after you configure a feed for the
+  first time, expect up to an hour of silence in the huge/titanic/
+  gargantuan channels while it builds up enough history for an exact
+  trailing-hour count. This is normal and by design — it deliberately
+  avoids posting a misleading estimate before it has real data.
+
+
+6. MOVING/COPYING SETUP TO ANOTHER SERVER
+-----------------------------------------------
+Each server's configuration is independent. To set the bot up in a second
+server, just invite it there (step 1) and run /config set again with that
+server's channels (step 4) — nothing needs to change in the first server,
+and nothing needs to change in the bot's code or hosting.
+
+
+TROUBLESHOOTING
+-------------------
+/config doesn't show up when I type it
+    The bot's slash commands may not be registered yet, or you're not in
+    a server it's been invited to. Ask whoever hosts the bot to check
+    SETUP-FILES.txt step 5.
+
+I get "You do not have permission to use this command"
+    /config requires "Manage Server" permission. Ask a server admin to run
+    it, or have them grant you that permission.
+
+I configured a channel but nothing posts there
+    - Double check with /config view that the channel is correct
+    - Make sure the bot's role has "Send Messages" and "Embed Links"
+      permission in that specific channel (channel-level permission
+      overrides can block a bot even if its server-wide role allows it)
+    - Give it a full 10-20 minutes after configuring before assuming
+      something's wrong
