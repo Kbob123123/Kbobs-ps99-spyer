@@ -1,0 +1,55 @@
+# Extra system libraries needed at runtime by the `canvas` npm package (used
+# by chartjs-node-canvas to render the member-comparison graph). Without
+# these, Railway's default Nixpacks image is missing shared libraries that
+# canvas's native binary dlopen()s at require() time, crashing the whole bot
+# on startup with ERR_DLOPEN_FAILED even though `npm install` succeeds fine.
+#
+# IMPORTANT: this is cairo's runtime dependency chain, all sourced from Nix
+# (via nixLibs) rather than mixed with apt or the base image's own copies.
+# Getting the WHOLE chain from one package source avoids ABI mismatches
+# between different builds of the same library — this bit us twice already:
+#   1. "undefined symbol: FT_Get_Transform" — Nix's cairo vs. a mismatched
+#      freetype from elsewhere on the system.
+#   2. "undefined symbol: g_memdup2" (from libcairo-gobject.so.2) — needed
+#      glib specifically for cairo's GObject bindings, which is what that
+#      symbol comes from.
+# nixLibs is Nixpacks' documented mechanism for "install this Nix package
+# AND add its library path to LD_LIBRARY_PATH automatically"
+# (see https://nixpacks.com/docs/configuration/file).
+#
+# NOTE: deliberately NOT including X11 libraries (libX11/libXext/libXrender)
+# here yet. This bot only renders to an in-memory image buffer (never to an
+# actual X display), so cairo's Xlib surface backend likely isn't loaded at
+# all — and the exact Nix attribute path for these wasn't confirmed with
+# certainty (xorg.libX11 vs a possible top-level alias) before this pass.
+# If a future crash log specifically references an X11 symbol, that's the
+# signal to add them — at that point, confirm the exact package name via
+# https://search.nixos.org/packages before adding, since a wrong nixLibs
+# entry likely fails the whole build rather than degrading gracefully.
+#
+# libuuid: hit a THIRD real crash after the two above — "libuuid.so.1: cannot
+# open shared object file" from canvas's native binary. This is a
+# well-documented node-canvas/Nixpacks issue (confirmed via Railway's own
+# help station and multiple node-canvas GitHub issues). `util-linux` was
+# already in this list and does contain libuuid internally, but its Nix
+# *binaries* (things like `last`, `mount`) don't reliably expose the shared
+# library itself on LD_LIBRARY_PATH the way a dedicated nixLibs entry does —
+# libuuid needs its own explicit line, not just util-linux's presence.
+[phases.setup]
+nixLibs = [
+  "util-linux",
+  "libuuid",
+  "cairo",
+  "pango",
+  "libjpeg",
+  "giflib",
+  "librsvg",
+  "freetype",
+  "fontconfig",
+  "pixman",
+  "harfbuzz",
+  "glib",
+  "libpng",
+  "zlib",
+  "expat"
+]

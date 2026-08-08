@@ -1,0 +1,74 @@
+import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
+import { getAllRap, getAllExists, describeVariant, variantKey } from '../lib/ps99Api.js';
+import { getTierMap } from '../lib/pets.js';
+import { formatNumber, displayName } from '../lib/format.js';
+
+const MAX_RESULTS = 15;
+
+export const data = new SlashCommandBuilder()
+  .setName('rap')
+  .setDescription('Look up the Recent Average Price of an item or pet. Partial names work.')
+  .addStringOption((opt) =>
+    opt.setName('item').setDescription('Item or pet name (partial is fine)').setRequired(true)
+  );
+
+export async function execute(interaction) {
+  await interaction.deferReply();
+
+  const query = interaction.options.getString('item', true).trim().toLowerCase();
+  if (query.length < 2) {
+    await interaction.editReply('❌ Enter at least 2 characters to search for.');
+    return;
+  }
+
+  const [rap, exists, tierMap] = await Promise.all([getAllRap(), getAllExists(), getTierMap()]);
+
+  // Index exists by variant key so each RAP row can show its scarcity next to
+  // its price — the two numbers are far more useful together than apart.
+  const existsByKey = new Map();
+  for (const e of exists) {
+    existsByKey.set(variantKey(e), (existsByKey.get(variantKey(e)) ?? 0) + (Number(e.value) || 0));
+  }
+
+  const matches = [];
+  for (const entry of rap) {
+    const name = entry.configData?.id;
+    if (!name || !name.toLowerCase().includes(query)) continue;
+    matches.push({
+      name,
+      variant: describeVariant(entry.configData ?? {}),
+      category: entry.category,
+      tier: tierMap.get(name) ?? null,
+      value: Number(entry.value) || 0,
+      exists: existsByKey.get(variantKey(entry)) ?? null,
+    });
+  }
+
+  if (matches.length === 0) {
+    await interaction.editReply(`❌ Nothing matching **${interaction.options.getString('item', true)}** has a RAP value.`);
+    return;
+  }
+
+  matches.sort((a, b) => b.value - a.value);
+  const shown = matches.slice(0, MAX_RESULTS);
+
+  const lines = shown.map((m) => {
+    const parts = [`**${displayName(m.name, m.variant)}** — 💎 ${formatNumber(m.value)}`];
+    if (m.exists != null) parts.push(`· ${formatNumber(m.exists)} exist`);
+    return parts.join(' ');
+  });
+
+  const embed = new EmbedBuilder()
+    .setTitle(`💰 RAP — "${interaction.options.getString('item', true)}"`)
+    .setColor(0x199e70)
+    .setDescription(lines.join('\n'))
+    .setTimestamp()
+    .setFooter({
+      text:
+        matches.length > MAX_RESULTS
+          ? `Showing the ${MAX_RESULTS} highest-value of ${matches.length} matches — try a more specific name.`
+          : `${matches.length} match${matches.length === 1 ? '' : 'es'}`,
+    });
+
+  await interaction.editReply({ embeds: [embed] });
+}

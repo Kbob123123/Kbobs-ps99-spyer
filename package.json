@@ -1,14 +1,23 @@
 {
-  "name": "ps99-discord-bot",
-  "version": "1.0.0",
+  "name": "ps99-pet-spyer",
+  "version": "2.0.0",
+  "description": "Discord bot that tracks Pet Simulator 99 pet hatch rates, RAP, and exists counts.",
   "type": "module",
+  "main": "src/index.js",
   "scripts": {
-    "deploy": "node deploy-commands.js",
-    "start": "node index.js"
+    "start": "node src/index.js",
+    "lint-commands": "node src/lint-commands.mjs src/commands",
+    "predeploy-commands": "npm run lint-commands",
+    "deploy-commands": "node src/deploy-commands.js"
   },
   "dependencies": {
-    "discord.js": "^14.14.1",
+    "chart.js": "^4.4.8",
+    "chartjs-node-canvas": "^5.0.0",
+    "discord.js": "^14.16.3",
     "dotenv": "^16.4.5",
     "node-fetch": "^3.3.2"
+  },
+  "engines": {
+    "node": ">=22.5.0"
   }
 }
