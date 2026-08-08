@@ -116,4 +116,45 @@ client.once('ready', () => {
   setTimeout(runAlertTick, 90_000);
 });
 
-client.login(process.env.DISCORD_TOKEN);
+// Check the token's shape before handing it to discord.js. Without this, a
+// missing or malformed token surfaces as a DiscordjsError [TokenInvalid] stack
+// trace, and because the restart policy retries, the logs fill with ten copies
+// of it — which reads like a code fault when it's really a config one.
+const token = process.env.DISCORD_TOKEN?.trim();
+
+if (!token) {
+  console.error(
+    '[startup] DISCORD_TOKEN is not set.\n' +
+      '  Railway: Variables tab -> add DISCORD_TOKEN.\n' +
+      '  Locally: copy .env.example to .env and fill it in.'
+  );
+  process.exit(1);
+}
+
+// A bot token is three dot-separated segments. The most common mistakes are
+// pasting the Application ID (digits only, no dots) or leaving quotes around
+// the value, and both are caught here.
+if (token.split('.').length !== 3) {
+  console.error(
+    '[startup] DISCORD_TOKEN does not look like a bot token.\n' +
+      '  Expected three dot-separated parts.\n' +
+      (/^\d+$/.test(token)
+        ? '  That value is all digits — it looks like the Application ID, not the token.\n'
+        : '') +
+      (/^["']|["']$/.test(token) ? '  Remove the surrounding quotes.\n' : '') +
+      '  Get a fresh one from the Developer Portal: your app -> Bot -> Reset Token.'
+  );
+  process.exit(1);
+}
+
+client.login(token).catch((err) => {
+  if (err.code === 'TokenInvalid') {
+    console.error(
+      '[startup] Discord rejected this token.\n' +
+        '  It is usually stale — resetting a token in the Developer Portal\n' +
+        "  immediately invalidates the old one, so Railway's copy must be updated too."
+    );
+    process.exit(1);
+  }
+  throw err;
+});
