@@ -5,7 +5,6 @@ import {
   recordReadings,
   upsertPetMetaBatch,
   getValueAt,
-  getLatestValue,
   pruneHistory,
   getChannelsOfKind,
   setChannelMessageId,
@@ -148,13 +147,18 @@ function collectTieredPets(raw, tierMap) {
 
 /** Hatches in the trailing hour, or null if there isn't an hour of history yet. */
 function hourlyRate(petKey, currentValue, now) {
+  // getValueAt only returns rows with ts <= the cutoff, so a non-null result
+  // already proves a reading exists from at least an hour ago. That is the
+  // whole check — nothing further is needed.
+  //
+  // This previously also consulted getLatestValue() to "confirm" enough
+  // history existed. That was wrong twice over: getLatestValue returns the
+  // NEWEST row (misread as the oldest), and the newest row is rewritten on
+  // every poll, so its timestamp is always ~now. The guard was therefore
+  // always true and this function returned null every time — no hatch rates,
+  // no rate posts, and no spike/drop alerts, permanently.
   const hourAgo = getValueAt('exists', petKey, now - HOUR);
   if (hourAgo == null) return null;
-
-  const earliest = getLatestValue('exists', petKey);
-  // A single reading means tracking just started for this pet — the "hour ago"
-  // lookup found that same row, so the difference would always be 0.
-  if (!earliest || earliest.ts > now - HOUR + 60) return null;
 
   return currentValue - hourAgo;
 }
