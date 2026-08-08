@@ -1,4 +1,3 @@
-import { ChartJSNodeCanvas } from 'chartjs-node-canvas';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { formatCompact, formatNumber, displayName } from './format.js';
@@ -40,22 +39,66 @@ export const TIER_COLORS = {
 const EXISTS_COLOR = '#3987e5';
 const RAP_COLOR = '#199e70';
 
-function makeCanvas(width, height) {
-  const canvas = new ChartJSNodeCanvas({
-    width,
-    height,
-    backgroundColour: SURFACE,
-    // Minimal Linux containers (Railway's build image included) often ship no
-    // fonts at all, which silently renders every label as an empty box.
-    // Bundling a font and registering it here makes output host-independent.
-    chartCallback: (ChartJS) => {
-      ChartJS.defaults.font.family = 'DejaVu Sans';
-      ChartJS.defaults.color = INK_MUTED;
-    },
-  });
-  canvas.registerFont(path.join(FONT_DIR, 'DejaVuSans.ttf'), { family: 'DejaVu Sans', weight: 'normal' });
-  canvas.registerFont(path.join(FONT_DIR, 'DejaVuSans-Bold.ttf'), { family: 'DejaVu Sans', weight: 'bold' });
-  return canvas;
+/**
+ * chartjs-node-canvas is imported LAZILY and never at module scope.
+ *
+ * It pulls in `canvas`, a native module that dlopen()s the cairo/pango stack
+ * at require() time. On a host missing any of those shared libraries (the
+ * classic one is `libuuid.so.1`) a top-level import throws while this module
+ * is still evaluating, which takes down every command that imports this file —
+ * including ones that draw no chart at all. Charts are decoration; the numbers
+ * are the product, so a missing library costs an image, not a command.
+ *
+ * Cached as a promise so the failure warning is logged once, not per render.
+ */
+let ctorPromise = null;
+
+function getChartCtor() {
+  if (!ctorPromise) {
+    ctorPromise = import('chartjs-node-canvas')
+      .then((m) => m.ChartJSNodeCanvas)
+      .catch((err) => {
+        console.warn(
+          `[graph] Chart rendering unavailable (${err.message}). ` +
+            'Embeds will post without images; everything else works normally.'
+        );
+        return null;
+      });
+  }
+  return ctorPromise;
+}
+
+/**
+ * Render a chart at a specific size, or null if this host can't render.
+ *
+ * Size is per-chart rather than global because the tier bar chart grows with
+ * the number of pets it plots.
+ */
+async function render(width, height, config) {
+  const ChartJSNodeCanvas = await getChartCtor();
+  if (!ChartJSNodeCanvas) return null;
+
+  try {
+    const canvas = new ChartJSNodeCanvas({
+      width,
+      height,
+      backgroundColour: SURFACE,
+      // Minimal Linux containers often ship no fonts at all, which silently
+      // renders every label as an empty box. Bundling a font and registering
+      // it here makes output host-independent.
+      chartCallback: (ChartJS) => {
+        ChartJS.defaults.font.family = 'DejaVu Sans';
+        ChartJS.defaults.color = INK_MUTED;
+      },
+    });
+    canvas.registerFont(path.join(FONT_DIR, 'DejaVuSans.ttf'), { family: 'DejaVu Sans', weight: 'normal' });
+    canvas.registerFont(path.join(FONT_DIR, 'DejaVuSans-Bold.ttf'), { family: 'DejaVu Sans', weight: 'bold' });
+
+    return await canvas.renderToBuffer(config);
+  } catch (err) {
+    console.warn('[graph] Render failed:', err.message);
+    return null;
+  }
 }
 
 /**
@@ -74,10 +117,9 @@ export async function renderTierRateChart(tier, tierLabel, items) {
   // Bar thickness is fixed rather than stretched to fill, so a chart of 3 pets
   // doesn't render three enormous slabs.
   const height = Math.max(220, 70 + rows.length * 30);
-  const canvas = makeCanvas(900, height);
   const color = TIER_COLORS[tier] ?? EXISTS_COLOR;
 
-  const buffer = await canvas.renderToBuffer({
+  const buffer = await render(900, height, {
     type: 'bar',
     data: {
       labels: rows.map((r) => truncateLabel(displayName(r.name, r.variant))),
@@ -169,12 +211,11 @@ function valueLabelPlugin(labels) {
 export async function renderHistoryChart(petLabel, metric, series) {
   if (!series || series.length < 2) return null;
 
-  const canvas = makeCanvas(900, 320);
   const isExists = metric === 'exists';
   const color = isExists ? EXISTS_COLOR : RAP_COLOR;
   const title = isExists ? `${petLabel} — exists over time` : `${petLabel} — RAP over time`;
 
-  const buffer = await canvas.renderToBuffer({
+  const buffer = await render(900, 320, {
     type: 'line',
     data: {
       labels: series.map((p) => formatTimeLabel(p.ts)),
