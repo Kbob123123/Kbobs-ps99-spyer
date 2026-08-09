@@ -7,12 +7,18 @@ import {
   getValueAt,
   pruneHistory,
   getChannelsOfKind,
-  setChannelMessageId,
   clearChannel,
   countRows,
 } from './db.js';
 import { renderTierRateChart, TIER_COLORS } from './graph.js';
-import { formatNumber, formatRate, formatMultiplier, formatPercentChange, displayName } from './format.js';
+import {
+  formatNumber,
+  formatCompact,
+  formatRate,
+  formatMultiplier,
+  formatPercentChange,
+  displayName,
+} from './format.js';
 
 const HOUR = 3600;
 
@@ -185,11 +191,12 @@ async function postRateUpdates(client, existsEntries, now) {
     ranked.sort((a, b) => b.rate - a.rate);
 
     const embed = new EmbedBuilder()
-      .setTitle(`${meta.emoji} ${meta.label} — hatched in the last hour`)
+      .setTitle(`${meta.label} Hatch Rates — Trailing Hour`)
       .setColor(parseInt(TIER_COLORS[tier].slice(1), 16))
       .setTimestamp();
 
     const files = [];
+    const tierTotal = [...existsEntries.values()].filter((e) => e.tier === tier).length;
 
     if (ranked.length === 0) {
       embed.setDescription(
@@ -197,11 +204,22 @@ async function postRateUpdates(client, existsEntries, now) {
           '(about an hour after the bot starts).'
       );
     } else {
-      const total = ranked.reduce((sum, r) => sum + r.rate, 0);
-      embed.setDescription(
-        `**${formatNumber(total)}** ${meta.label} pets hatched in the last hour, across ` +
-          `**${ranked.length}** variants.`
-      );
+      // The text list carries BOTH the running total and the hour's delta.
+      // The chart alone can't show totals, and the totals are what make a buff
+      // or nerf visible when comparing two posts an hour apart.
+      const lines = [];
+      let used = 0;
+      for (const r of ranked) {
+        const line =
+          `**${r.name}** (${r.variant}) — ${formatCompact(r.value)} total · ` +
+          `+${formatNumber(r.rate)} in the last hour`;
+        // Discord caps a description at 4096 characters.
+        if (used + line.length + 1 > 3900) break;
+        lines.push(line);
+        used += line.length + 1;
+      }
+
+      embed.setDescription(lines.join('\n'));
 
       const chart = await renderTierRateChart(
         tier,
@@ -215,23 +233,22 @@ async function postRateUpdates(client, existsEntries, now) {
       if (chart) {
         files.push(new AttachmentBuilder(chart, { name: `${tier}-rates.png` }));
         embed.setImage(`attachment://${tier}-rates.png`);
-      } else {
-        // No chart — fall back to a text list so the post is still useful.
-        embed.addFields({
-          name: 'Top hatches',
-          value: ranked
-            .slice(0, 10)
-            .map((r, i) => `**#${i + 1}** ${displayName(r.name, r.variant)} — ${formatNumber(r.rate)}`)
-            .join('\n'),
-        });
       }
     }
 
-    embed.setFooter({ text: 'Exact count over the trailing 60 minutes · updates every 10 minutes' });
+    embed.setFooter({
+      text:
+        `Exact count over the last 60 minutes, recalculated every 10 min · ` +
+        `${formatNumber(tierTotal)} ${meta.label.toLowerCase()} pets tracked`,
+    });
 
-    for (const row of channels) {
-      await postOrEdit(client, row, { embeds: [embed], files });
-    }
+    // A NEW message each cycle, deliberately — not an edit in place.
+    //
+    // The scrollback IS the feature: comparing two posts an hour apart is how
+    // you spot a buff or a nerf, and an edited message destroys that history.
+    // (The top-10 leaderboard boards still edit in place, because there the
+    // point is a single always-current standing rather than a timeline.)
+    await broadcast(client, channels, { embeds: [embed], files });
   }
 }
 
@@ -384,36 +401,14 @@ async function checkRapAlerts(client, rapEntries, now) {
  * ------------------------------------------------------------------------- */
 
 /**
- * Edit this channel's existing post if there is one, otherwise send a new one
- * and remember its id. Used for the recurring rate posts so a channel holds a
- * single message that updates in place instead of a new post every 10 minutes.
+ * Everything the tracker posts sends a NEW message.
+ *
+ * For alerts that's obvious — an edited alert nobody saw is a lost alert. For
+ * the hourly rate posts it's the whole point: the channel becomes a timeline
+ * you can scroll back through to compare one hour against another, which is
+ * how a buff or nerf becomes visible. Editing one message in place would erase
+ * exactly the history that makes these posts worth reading.
  */
-async function postOrEdit(client, row, payload) {
-  try {
-    const channel = await client.channels.fetch(row.channel_id).catch(() => null);
-    if (!channel || !channel.isTextBased()) {
-      console.warn(`[tracker] Channel ${row.channel_id} is gone; unregistering ${row.kind}.`);
-      clearChannel(row.guild_id, row.kind);
-      return;
-    }
-
-    if (row.message_id) {
-      const existing = await channel.messages.fetch(row.message_id).catch(() => null);
-      if (existing) {
-        await existing.edit(payload);
-        return;
-      }
-      // Deleted — fall through and post a replacement.
-    }
-
-    const sent = await channel.send(payload);
-    setChannelMessageId(row.guild_id, row.kind, sent.id);
-  } catch (err) {
-    console.error(`[tracker] Failed to update ${row.kind} in ${row.channel_id}:`, err.message);
-  }
-}
-
-/** Alerts always post a NEW message — an edited alert nobody saw is a lost alert. */
 async function broadcast(client, rows, payload) {
   for (const row of rows) {
     try {
