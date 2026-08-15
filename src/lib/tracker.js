@@ -30,7 +30,7 @@ const HISTORY_KEEP_SECONDS = 30 * 24 * HOUR; // 30 days, for /pet charts
 // list floods the channel on that tier specifically. Capping keeps every post
 // the same readable size, and the remainder is still counted in the summary
 // line so nothing silently disappears.
-const MAX_LISTED_PER_POST = 15;
+const MAX_LISTED_PER_POST = 20;
 
 // Exists-rate alerts compare THIS hour's hatch rate against LAST hour's, so
 // the bot needs ~2 hours of readings before they can fire at all.
