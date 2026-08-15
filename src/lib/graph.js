@@ -225,11 +225,13 @@ export async function renderHistoryChart(petLabel, metric, series) {
           borderColor: color,
           backgroundColor: color,
           borderWidth: 2,
-          // Readings are stored only when the value changes, so the true shape
-          // between two stored points is a flat hold, not a slope. A stepped
-          // line states that honestly instead of inventing gradual drift.
-          stepped: 'before',
-          pointRadius: series.length > 40 ? 0 : 3,
+          // Smooth curve rather than a stepped line. Readings are stored only
+          // when a value changes, so a step function is technically the more
+          // literal shape — but exists and RAP move continuously in reality,
+          // the steps are an artefact of how we sample, and the blocky result
+          // was harder to read than the trend it was hiding.
+          tension: 0.35,
+          pointRadius: series.length > 40 ? 0 : 2,
           pointHoverRadius: 0,
           fill: false,
         },
