@@ -24,6 +24,14 @@ const HOUR = 3600;
 
 const HISTORY_KEEP_SECONDS = 30 * 24 * HOUR; // 30 days, for /pet charts
 
+// How many pets the hatch-rate text list names before summarising the rest.
+//
+// Huge has ~4,400 tracked variants against Titanic's ~900, so an unbounded
+// list floods the channel on that tier specifically. Capping keeps every post
+// the same readable size, and the remainder is still counted in the summary
+// line so nothing silently disappears.
+const MAX_LISTED_PER_POST = 15;
+
 // Exists-rate alerts compare THIS hour's hatch rate against LAST hour's, so
 // the bot needs ~2 hours of readings before they can fire at all.
 const RATE_SPIKE_FACTOR = 2; // hatching >=2x last hour's pace
@@ -33,12 +41,32 @@ const RATE_DROP_FACTOR = 0.5; // hatching <=half last hour's pace
 // anything — a pet going from 1/h to 4/h is not news.
 const MIN_BASELINE_RATE = 40;
 
-// RAP alert: a 200% swing means the value tripled or fell to a third.
-const RAP_CHANGE_FACTOR = 3;
+// RAP alerts: percentage movement over 24 hours. 15% is a real move in a day
+// without being noise, and it catches a pet that is *starting* to climb rather
+// than only one that has already doubled.
+const RAP_CHANGE_PCT = 0.15;
 
-// Spike/drop alerts cover Titanic and Gargantuan only. Huge pets hatch in such
-// volume that their alerts fire constantly and stop being signal. The hourly
-// rate CHANNELS still cover all three tiers.
+// Ignore pets below this RAP — percentage noise lives at the cheap end.
+//
+// Calibrated against live data rather than guessed: median Huge RAP is ~323M
+// and the 25th percentile ~87M, so an earlier 100k floor excluded essentially
+// nothing (96% of pets still qualified). 10M actually trims the bottom of the
+// Huge range while leaving every pet anyone trades seriously.
+const RAP_MIN_VALUE = 10_000_000;
+
+// ...and ignore moves whose absolute size is trivial, so a large percentage on
+// a cheap pet doesn't crowd out a smaller percentage on something valuable.
+const RAP_MIN_ABSOLUTE = 5_000_000;
+
+// RAP alerts cover ALL THREE tiers, unlike the hatch-rate alerts below. Huges
+// are the bulk of the trading market, so excluding them would hide most of the
+// price movement worth knowing about — and the value floor above already keeps
+// the volume manageable.
+const RAP_ALERT_TIERS = new Set(['huge', 'titanic', 'gargantuan']);
+
+// Hatch-rate spike/drop alerts stay Titanic/Gargantuan only: Huge pets hatch in
+// such volume that their alerts fire constantly and stop being signal. The
+// hourly rate CHANNELS still cover all three tiers.
 const ALERT_TIERS = new Set(['titanic', 'gargantuan']);
 
 /**
@@ -210,17 +238,26 @@ async function postRateUpdates(client, existsEntries, now) {
       // or nerf visible when comparing two posts an hour apart.
       const lines = [];
       let used = 0;
-      for (const r of ranked) {
+      for (const r of ranked.slice(0, MAX_LISTED_PER_POST)) {
         const line =
           `**${r.name}** (${r.variant}) — ${formatCompact(r.value)} total · ` +
           `+${formatNumber(r.rate)} in the last hour`;
         // Discord caps a description at 4096 characters.
-        if (used + line.length + 1 > 3900) break;
+        if (used + line.length + 1 > 3800) break;
         lines.push(line);
         used += line.length + 1;
       }
 
-      embed.setDescription(lines.join('\n'));
+      // Always account for what isn't listed, so a capped post never reads as
+      // "these are all the pets that hatched".
+      const remaining = ranked.length - lines.length;
+      const hatched = ranked.reduce((sum, r) => sum + r.rate, 0);
+
+      const summary =
+        `_**${formatNumber(hatched)}** hatched across **${ranked.length}** variants` +
+        (remaining > 0 ? ` — top ${lines.length} shown, ${remaining} more not listed._` : '._');
+
+      embed.setDescription(`${lines.join('\n')}\n\n${summary}`);
 
       const chart = await renderTierRateChart(
         tier,
@@ -352,47 +389,81 @@ function formatRateAlertLine(a) {
  * RAP swing alerts
  * ------------------------------------------------------------------------- */
 
+/**
+ * Alert on meaningful RAP movement over 24 hours.
+ *
+ * This used to require the value to TRIPLE (or fall to a third). For an
+ * established pet that essentially never happens, so the alert was dead in
+ * practice — it could fire in theory and never did.
+ *
+ * A percentage threshold catches what actually matters for trading: a pet
+ * starting to climb steadily. 15% in a day is a real move without being noise,
+ * and it surfaces a trend early rather than only after it has already run.
+ *
+ * Two guards keep it useful rather than spammy:
+ *   - a minimum RAP, because a 20% move on a near-worthless pet is not a
+ *     signal and low-value items are where percentage noise lives;
+ *   - a minimum absolute change, so a large-but-cheap swing doesn't crowd out
+ *     a smaller percentage move on something genuinely valuable.
+ */
 async function checkRapAlerts(client, rapEntries, now) {
   const channels = getChannelsOfKind('rap');
   if (channels.length === 0) return;
 
-  const moves = [];
+  const risers = [];
+  const fallers = [];
 
   for (const entry of rapEntries.values()) {
-    if (!ALERT_TIERS.has(entry.tier)) continue;
+    if (!RAP_ALERT_TIERS.has(entry.tier)) continue;
+    if (entry.value < RAP_MIN_VALUE) continue;
 
-    // Compare against the value a day ago rather than the previous poll: RAP is
-    // cached upstream for hours, so consecutive polls almost always show no
-    // change at all.
+    // Compare against a day ago rather than the previous poll: RAP is cached
+    // upstream for hours, so consecutive polls almost always show no change.
     const before = getValueAt('rap', entry.petKey, now - 24 * HOUR);
     if (before == null || before <= 0 || entry.value <= 0) continue;
 
-    const ratio = entry.value / before;
-    if (ratio >= RAP_CHANGE_FACTOR || ratio <= 1 / RAP_CHANGE_FACTOR) {
-      moves.push({ ...entry, before, ratio });
-    }
+    const change = entry.value - before;
+    const pct = change / before;
+    if (Math.abs(pct) < RAP_CHANGE_PCT) continue;
+    if (Math.abs(change) < RAP_MIN_ABSOLUTE) continue;
+
+    const record = { ...entry, before, change, pct };
+    if (change > 0) risers.push(record);
+    else fallers.push(record);
   }
 
-  if (moves.length === 0) return;
+  if (risers.length === 0 && fallers.length === 0) return;
 
-  moves.sort((a, b) => Math.abs(Math.log(b.ratio)) - Math.abs(Math.log(a.ratio)));
+  risers.sort((a, b) => b.pct - a.pct);
+  fallers.sort((a, b) => a.pct - b.pct);
+
+  const line = (m) =>
+    `**${displayName(m.name, m.variant)}** [${m.tier}] — ` +
+    `${formatCompact(m.before)} → ${formatCompact(m.value)} ` +
+    `(**${formatPercentChange(m.before, m.value)}**)`;
 
   const embed = new EmbedBuilder()
-    .setTitle('💰 RAP Swing Alert')
+    .setTitle('💰 RAP Movement — last 24h')
     .setColor(0x199e70)
     .setTimestamp()
-    .setDescription(
-      moves
-        .slice(0, 12)
-        .map(
-          (m) =>
-            `**${displayName(m.name, m.variant)}** [${m.tier}] — ` +
-            `${formatNumber(m.before)} → ${formatNumber(m.value)} ` +
-            `(${formatPercentChange(m.before, m.value)})`
-        )
-        .join('\n')
-    )
-    .setFooter({ text: 'Value tripled or fell to a third within 24h · Titanic/Gargantuan only' });
+    .setFooter({
+      text:
+        `Moves of ${Math.round(RAP_CHANGE_PCT * 100)}%+ over 24h · ` +
+        `checked hourly · min RAP ${formatCompact(RAP_MIN_VALUE)}`,
+    });
+
+  if (risers.length > 0) {
+    embed.addFields({
+      name: `📈 Rising (${risers.length})`,
+      value: risers.slice(0, 12).map(line).join('\n').slice(0, 1024),
+    });
+  }
+  if (fallers.length > 0) {
+    embed.addFields({
+      name: `📉 Falling (${fallers.length})`,
+      value: fallers.slice(0, 12).map(line).join('\n').slice(0, 1024),
+    });
+  }
 
   await broadcast(client, channels, { embeds: [embed] });
 }
