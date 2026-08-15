@@ -1,6 +1,6 @@
 import { EmbedBuilder, AttachmentBuilder } from 'discord.js';
 import { getAllExists, getAllRap, variantKey, describeVariant } from './ps99Api.js';
-import { getTierMap, TIERS, TIER_META } from './pets.js';
+import { getTierMap, reportNewPets, TIERS, TIER_META } from './pets.js';
 import {
   recordReadings,
   upsertPetMetaBatch,
@@ -49,6 +49,7 @@ const ALERT_TIERS = new Set(['titanic', 'gargantuan']);
  */
 export async function runPoll(client) {
   const tierMap = await getTierMap();
+  reportNewPets(tierMap);
   const now = Math.floor(Date.now() / 1000);
 
   const [existsRaw, rapRaw] = await Promise.all([getAllExists(), getAllRap()]);

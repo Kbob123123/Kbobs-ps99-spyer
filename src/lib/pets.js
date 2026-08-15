@@ -42,9 +42,19 @@ function classify(cfg, name) {
   return null;
 }
 
-/** Map of pet name -> 'huge' | 'titanic' | 'gargantuan'. Excludes untiered pets. */
+/**
+ * Map of pet name -> 'huge' | 'titanic' | 'gargantuan'. Excludes untiered pets.
+ *
+ * Uses the SHORT-cached collection on purpose. The tracker drops any pet
+ * missing from this map (`if (!tier) continue`), so a newly released Titanic
+ * isn't merely late to appear — no history is recorded for it at all. On the
+ * 6-hour cache that meant up to 6 hours invisible, plus another hour before a
+ * rate could be computed from the history that only then started. Refreshing
+ * at roughly poll cadence means a new pet starts accumulating history within
+ * ~10 minutes of release.
+ */
 export async function getTierMap() {
-  const pets = await getPetsCollection();
+  const pets = await getPetsCollectionFresh();
   const map = new Map();
 
   for (const pet of pets) {
@@ -75,6 +85,38 @@ export async function getThumbnailMap() {
   }
 
   return map;
+}
+
+// Names seen in the previous tier-map build, so newly released pets can be
+// called out in the logs instead of appearing silently.
+let previouslySeen = null;
+
+/**
+ * Log any tiered pets that weren't in the last build.
+ *
+ * Worth surfacing: a new Titanic dropping is exactly the moment the tracker
+ * matters most, and "did it pick up the new pet?" is otherwise unanswerable
+ * without querying the database by hand.
+ */
+export function reportNewPets(tierMap) {
+  const names = new Set(tierMap.keys());
+
+  if (previouslySeen === null) {
+    previouslySeen = names;
+    return [];
+  }
+
+  const added = [...names].filter((n) => !previouslySeen.has(n));
+  previouslySeen = names;
+
+  if (added.length > 0) {
+    console.log(
+      `[pets] ${added.length} new tiered pet(s) detected: ` +
+        added.map((n) => `${n} (${tierMap.get(n)})`).join(', ')
+    );
+  }
+
+  return added;
 }
 
 /** Every known pet name (including untiered), for /pet and /rap name resolution. */
@@ -111,12 +153,5 @@ export async function getPetDetail(name) {
 }
 
 /** Names present in the fresh collection — used to detect newly released pets. */
-export async function getFreshPetNames() {
-  const pets = await getPetsCollectionFresh();
-  const names = [];
-  for (const pet of pets) {
-    const name = pet.configData?.name ?? pet.configName;
-    if (name && !isExcluded(name)) names.push(name);
-  }
-  return names;
-}
+// (getFreshPetNames removed — getTierMap now reads the short-cached collection
+// directly, so there is no second "fresh" path to keep in sync.)
