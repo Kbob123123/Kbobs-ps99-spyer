@@ -283,7 +283,24 @@ export function isGuildWhitelisted(guildId) {
 
 const COMMAND_LOG_MAX_ROWS = 20000;
 
+/**
+ * Whether command logging is currently running.
+ *
+ * Defaults to ON when unset: the owner asked for this to monitor servers, and
+ * a monitor that silently starts disabled would look broken rather than idle.
+ * The menu's stop button writes 'off' explicitly.
+ */
+export function isCommandLoggingEnabled() {
+  return getMeta('command_logging') !== 'off';
+}
+
+export function setCommandLoggingEnabled(on) {
+  setMeta('command_logging', on ? 'on' : 'off');
+}
+
 export function logCommand({ guildId, guildName, userId, username, command, options, outcome }) {
+  if (!isCommandLoggingEnabled()) return;
+
   db.prepare(`
     INSERT INTO command_log (ts, guild_id, guild_name, user_id, username, command, options, outcome)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)

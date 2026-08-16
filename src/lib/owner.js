@@ -4,12 +4,7 @@ import { countWhitelistedGuilds, isGuildWhitelisted } from './db.js';
 // wrong value is a one-variable fix instead of a redeploy — which matters
 // here, because getting it wrong locks the owner out of /ownermenu, the very
 // command needed to fix anything else.
-//
-// NOTE: the configured default is 16 digits. Discord user IDs are normally
-// 17-19, so this may well be a typo. If /ownermenu says you are not the owner,
-// that is the first thing to check: set OWNER_ID to the value from Discord's
-// "Copy User ID" (Developer Mode must be on).
-export const OWNER_ID = (process.env.OWNER_ID || '7487924737941921').trim();
+export const OWNER_ID = (process.env.OWNER_ID || '748792473794641921').trim();
 
 export function isOwner(userId) {
   return String(userId) === OWNER_ID;
