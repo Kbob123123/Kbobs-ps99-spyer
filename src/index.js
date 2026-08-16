@@ -15,7 +15,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { runPoll, runHourlyAlerts } from './lib/tracker.js';
 import { checkAccess, describeInvocation } from './lib/owner.js';
 import { logCommand, isGuildWhitelisted } from './lib/db.js';
-import { postCommandLog, postLeaveNotice } from './lib/commandLog.js';
+import { postCommandLog, postLeaveNotice, postGuildJoinLog } from './lib/commandLog.js';
 import {
   COMPONENT_PREFIX as OWNERMENU_PREFIX,
   handleComponent as handleOwnerMenuComponent,
@@ -65,6 +65,8 @@ async function enforceGuildWhitelist(guild, { onStartup = false } = {}) {
   const how = onStartup ? 'Found' : 'Added to';
   console.warn('[whitelist] ' + how + ' unapproved server "' + guild.name + '" (' + guild.id + ') — leaving.');
 
+  await postGuildJoinLog(client, guild, { approved: false, onStartup }).catch(() => {});
+
   await postLeaveNotice(guild, {
     reason:
       "🔒 **This bot is invite-only.** This server hasn't been approved, so it can't stay.",
@@ -78,9 +80,14 @@ async function enforceGuildWhitelist(guild, { onStartup = false } = {}) {
 }
 
 client.on('guildCreate', async (guild) => {
-  await enforceGuildWhitelist(guild).catch((err) => {
+  try {
+    const left = await enforceGuildWhitelist(guild);
+    // Approved joins are logged too, so the owner gets an invite link for
+    // every server the bot is in, not only the ones it turned away.
+    if (!left) await postGuildJoinLog(client, guild, { approved: true });
+  } catch (err) {
     console.error('[whitelist] guildCreate handling failed:', err);
-  });
+  }
 });
 
 client.on('interactionCreate', async (interaction) => {

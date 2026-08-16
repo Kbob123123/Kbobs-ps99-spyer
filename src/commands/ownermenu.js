@@ -22,7 +22,7 @@ import {
   setCommandLoggingEnabled,
 } from '../lib/db.js';
 import { isOwner, OWNER_ID } from '../lib/owner.js';
-import { getLogChannelId, setLogChannelId, clearLogChannel, postLeaveNotice } from '../lib/commandLog.js';
+import { getLogChannelId, setLogChannelId, clearLogChannel, postLeaveNotice, createGuildInvite } from '../lib/commandLog.js';
 import { capToFieldLimit, DESCRIPTION_LIMIT } from '../lib/format.js';
 
 // One command, one menu. Everything else happens through buttons on the reply
@@ -111,6 +111,8 @@ export async function handleComponent(interaction) {
     else addWhitelistedGuild({ guildId, note: null, addedBy: interaction.user.id });
     return interaction.editReply(buildGuildView(interaction.client, guildId));
   }
+
+  if (action === 'all_invites') return interaction.editReply(await buildAllInvitesView(interaction.client));
 
   if (verb === 'invite') return interaction.editReply(await buildInviteView(interaction.client, guildId));
 
@@ -338,8 +340,49 @@ function buildServersView(client) {
     );
   }
 
-  components.push(backRow());
+  components.push(
+    new ActionRowBuilder().addComponents(
+      button('all_invites', 'Invites for all servers', ButtonStyle.Primary, '🔗'),
+      button('home', 'Back to menu', ButtonStyle.Secondary, '◀️')
+    )
+  );
+
   return { content: '', embeds: [embed], components };
+}
+
+/**
+ * An invite to every server the bot is in, in one place.
+ *
+ * Serial rather than parallel: this is N invite creations against the Discord
+ * API, and firing them all at once is the fastest way to get rate-limited on
+ * an owner-only convenience.
+ */
+async function buildAllInvitesView(client) {
+  const guilds = [...client.guilds.cache.values()].sort((a, b) => a.name.localeCompare(b.name));
+
+  const lines = [];
+  for (const guild of guilds) {
+    const invite = await createGuildInvite(guild, {
+      maxAge: 7 * 24 * 3600,
+      maxUses: 0,
+      reason: 'Bot owner requested access to every server',
+    });
+
+    const mark = isGuildWhitelisted(guild.id) ? '✅' : '⛔';
+    lines.push(
+      `${mark} **${guild.name}** · \`${guild.id}\`\n` +
+        `└ ${invite ? invite.url : '_no invite — the bot lacks Create Invite there_'}`
+    );
+  }
+
+  const embed = new EmbedBuilder()
+    .setTitle(`🔗 Invites — ${guilds.length} server(s)`)
+    .setColor(0x5865f2)
+    .setDescription(capToFieldLimit(lines, '_The bot is not in any servers._', DESCRIPTION_LIMIT))
+    .setFooter({ text: 'All links last 7 days. ✅ approved · ⛔ not approved' })
+    .setTimestamp();
+
+  return { content: '', embeds: [embed], components: [backRow()] };
 }
 
 /** One server: what it is, and what can be done about it. */
