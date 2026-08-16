@@ -14,7 +14,8 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { runPoll, runHourlyAlerts } from './lib/tracker.js';
 import { checkAccess, describeInvocation } from './lib/owner.js';
-import { logCommand } from './lib/db.js';
+import { logCommand, isGuildWhitelisted } from './lib/db.js';
+import { postCommandLog, postLeaveNotice } from './lib/commandLog.js';
 import {
   COMPONENT_PREFIX as OWNERMENU_PREFIX,
   handleComponent as handleOwnerMenuComponent,
@@ -49,6 +50,39 @@ if (client.commands.size === 0) {
   console.error('[commands] No commands loaded — check the errors above.');
 }
 
+/**
+ * Refuse to stay in a server that isn't approved.
+ *
+ * Gating commands is not enough on its own: anyone with the invite link can
+ * add the bot anywhere, and it would then sit there indefinitely, appear in
+ * the member list, and show its commands in the picker. Leaving immediately is
+ * what makes the whitelist mean "where this bot runs" rather than just "where
+ * its commands succeed".
+ */
+async function enforceGuildWhitelist(guild, { onStartup = false } = {}) {
+  if (isGuildWhitelisted(guild.id)) return false;
+
+  const how = onStartup ? 'Found' : 'Added to';
+  console.warn('[whitelist] ' + how + ' unapproved server "' + guild.name + '" (' + guild.id + ') — leaving.');
+
+  await postLeaveNotice(guild, {
+    reason:
+      "🔒 **This bot is invite-only.** This server hasn't been approved, so it can't stay.",
+  }).catch(() => {});
+
+  await guild.leave().catch((err) => {
+    console.error('[whitelist] Could not leave ' + guild.id + ':', err.message);
+  });
+
+  return true;
+}
+
+client.on('guildCreate', async (guild) => {
+  await enforceGuildWhitelist(guild).catch((err) => {
+    console.error('[whitelist] guildCreate handling failed:', err);
+  });
+});
+
 client.on('interactionCreate', async (interaction) => {
   // Buttons and modals from the owner menu. Routed by custom_id prefix so the
   // menu owns its own component logic instead of this file growing a switch.
@@ -74,6 +108,7 @@ client.on('interactionCreate', async (interaction) => {
     username: interaction.user.username,
     command: interaction.commandName,
     options: describeInvocation(interaction),
+    avatarUrl: interaction.user.displayAvatarURL(),
   };
 
   // Whitelist check before anything runs. Logged either way — a blocked
@@ -85,17 +120,17 @@ client.on('interactionCreate', async (interaction) => {
   });
 
   if (!access.allowed) {
-    safeLog({ ...logBase, outcome: 'blocked' });
+    safeLog(client, { ...logBase, outcome: 'blocked' });
     await interaction.reply({ content: access.reason, ephemeral: true }).catch(() => {});
     return;
   }
 
   try {
     await command.execute(interaction);
-    safeLog({ ...logBase, outcome: 'ok' });
+    safeLog(client, { ...logBase, outcome: 'ok' });
   } catch (err) {
     console.error(`[interaction] Error running /${interaction.commandName}:`, err);
-    safeLog({ ...logBase, outcome: `error: ${err.message}`.slice(0, 200) });
+    safeLog(client, { ...logBase, outcome: `error: ${err.message}`.slice(0, 200) });
     const payload = { content: '❌ Something went wrong running that command.', ephemeral: true };
     if (interaction.deferred || interaction.replied) {
       await interaction.editReply(payload).catch(() => {});
@@ -106,12 +141,14 @@ client.on('interactionCreate', async (interaction) => {
 });
 
 /** Logging must never be the reason a command fails. */
-function safeLog(entry) {
+function safeLog(client, entry) {
   try {
     logCommand(entry);
   } catch (err) {
     console.warn('[log] Could not record command use:', err.message);
   }
+
+  postCommandLog(client, entry).catch(() => {});
 }
 
 const POLL_INTERVAL_MS = (Number(process.env.POLL_INTERVAL_MINUTES) || 10) * 60 * 1000;
@@ -154,7 +191,20 @@ async function runAlertTick() {
   }
 }
 
-client.once('ready', () => {
+client.once('ready', async () => {
+  // Sweep servers joined while the bot was offline, or before the whitelist
+  // existed. Without this the whitelist only ever applies to future invites
+  // and everything already joined stays forever.
+  let left = 0;
+  for (const guild of [...client.guilds.cache.values()]) {
+    try {
+      if (await enforceGuildWhitelist(guild, { onStartup: true })) left += 1;
+    } catch (err) {
+      console.error('[whitelist] Startup sweep failed for ' + guild.id + ':', err.message);
+    }
+  }
+  console.log('[whitelist] ' + client.guilds.cache.size + ' approved server(s) remain' + (left > 0 ? '; left ' + left + ' unapproved.' : '.'));
+
   console.log(`Logged in as ${client.user.tag}.`);
   console.log(`Polling every ${POLL_INTERVAL_MS / 60000} minute(s); alerts checked hourly.`);
   setInterval(runPollTick, POLL_INTERVAL_MS);

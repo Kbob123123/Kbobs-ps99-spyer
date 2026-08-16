@@ -11,41 +11,38 @@ export function isOwner(userId) {
 }
 
 /**
- * Commands that must work regardless of whitelist state.
- *
- * /ownermenu is here so the owner can never be locked out by their own
- * configuration, and /help so a server that has just been blocked can still
- * see what the bot is and who to ask.
- */
-const ALWAYS_ALLOWED = new Set(['ownermenu', 'help']);
-
-/**
  * Whether a command may run.
  *
  * Returns { allowed: true } or { allowed: false, reason } with a message meant
  * to be shown to the user.
  *
- * The empty-whitelist case deliberately allows everything. Treating "no rows"
- * as "deny all" would have taken every server offline the moment this shipped,
- * including the owner's, so enforcement only starts once the owner has
- * explicitly listed at least one guild.
+ * DENY BY DEFAULT: a server has to be on the whitelist. An empty whitelist
+ * therefore allows nothing rather than everything — being in a server is not
+ * the same as being wanted there.
+ *
+ * The owner is never blocked, by their user ID rather than by which server
+ * they are in, so an empty or misconfigured whitelist can never lock them out
+ * of /ownermenu — the one command needed to fix it.
  */
 export function checkAccess({ commandName, guildId, userId }) {
   if (isOwner(userId)) return { allowed: true };
-  if (ALWAYS_ALLOWED.has(commandName)) return { allowed: true };
 
-  // DMs have no guild to check against; the bot is server-oriented anyway.
-  if (!guildId) return { allowed: true };
-
-  if (countWhitelistedGuilds() === 0) return { allowed: true };
+  // A DM has no guild to check. Only the owner gets to use the bot there;
+  // otherwise a blocked server could just DM the bot instead.
+  if (!guildId) {
+    return {
+      allowed: false,
+      reason: '🔒 This bot only works in servers its owner has approved.',
+    };
+  }
 
   if (isGuildWhitelisted(guildId)) return { allowed: true };
 
   return {
     allowed: false,
     reason:
-      "🔒 This server isn't whitelisted to use this bot.\n" +
-      'Ask the bot owner to add it — they need this server\'s ID, which is ' +
+      "🔒 This server isn't approved to use this bot.\n" +
+      "Ask the bot owner to add it — they'll need this server's ID: " +
       `\`${guildId}\`.`,
   };
 }
