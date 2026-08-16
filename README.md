@@ -43,6 +43,13 @@ sibling bots.
 | `/setratechannel tier:<huge\|titanic\|gargantuan> [channel:#channel]` | Where hourly hatch rates post for a tier. Omit the channel to turn it off. Requires "Manage Server". |
 | `/setalertchannel type:<spikes\|rap> [channel:#channel]` | Where alerts post. Omit the channel to turn it off. Requires "Manage Server". |
 | `/spyerconfig` | Current channel setup and how much history has been collected. |
+| `/help [command:<name>]` | Every command, grouped, with what each one does. Pass a name for full detail on one, including its arguments. |
+
+`/help` builds its list from the commands the bot actually loaded at startup,
+not from a hardcoded table — so it cannot go stale the way this README can. A
+new command file shows up automatically; the only handwritten part is which
+heading it sits under, and anything uncategorised falls into "Other" rather
+than disappearing.
 
 ## How the numbers work
 
