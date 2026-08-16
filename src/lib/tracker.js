@@ -5,8 +5,11 @@ import {
   recordReadings,
   upsertPetMetaBatch,
   getValueAt,
+  getLatestValue,
   pruneHistory,
   getChannelsOfKind,
+  getMeta,
+  setMeta,
   clearChannel,
   countRows,
 } from './db.js';
@@ -58,11 +61,17 @@ const RAP_MIN_VALUE = 10_000_000;
 // a cheap pet doesn't crowd out a smaller percentage on something valuable.
 const RAP_MIN_ABSOLUTE = 5_000_000;
 
-// RAP alerts cover ALL THREE tiers, unlike the hatch-rate alerts below. Huges
-// are the bulk of the trading market, so excluding them would hide most of the
-// price movement worth knowing about — and the value floor above already keeps
-// the volume manageable.
-const RAP_ALERT_TIERS = new Set(['huge', 'titanic', 'gargantuan']);
+// RAP is now a once-a-day summary covering Titanic and above.
+//
+// It used to fire hourly across all three tiers including Huge. Huges are the
+// bulk of the market, so that produced a steady stream of alerts that people
+// stopped reading — and an alert nobody reads is worse than no alert, because
+// it buries the ones that matter. Titanic+ once a day is the signal without
+// the noise.
+const RAP_SUMMARY_TIERS = new Set(['titanic', 'gargantuan']);
+
+// UTC hour at which the daily summary posts.
+const RAP_SUMMARY_HOUR_UTC = Number(process.env.RAP_SUMMARY_HOUR_UTC ?? 17);
 
 // Hatch-rate spike/drop alerts stay Titanic/Gargantuan only: Huge pets hatch in
 // such volume that their alerts fire constantly and stop being signal. The
@@ -95,6 +104,11 @@ export async function runPoll(client) {
     }))
   );
 
+  // Must happen BEFORE recordReadings, which overwrites the stored value that
+  // "previous" is measured against. Reversing these two lines would make every
+  // gargantuan look unchanged and the announcement would never fire.
+  const gargHatches = findNewGargantuanHatches(existsEntries);
+
   const existsWritten = recordReadings(
     'exists',
     [...existsEntries.values()].map((e) => ({ petKey: e.petKey, value: e.value })),
@@ -112,7 +126,7 @@ export async function runPoll(client) {
       `(${countRows('exists')} + ${countRows('rap')} total).`
   );
 
-  await postRateUpdates(client, existsEntries, now);
+  await postRateUpdates(client, existsEntries, now, gargHatches);
 
   pruneHistory('exists', HISTORY_KEEP_SECONDS);
   pruneHistory('rap', HISTORY_KEEP_SECONDS);
@@ -139,7 +153,33 @@ export async function runHourlyAlerts(client) {
   const rapEntries = collectTieredPets(rapRaw, tierMap);
 
   await checkExistsRateAlerts(client, existsEntries, now);
-  await checkRapAlerts(client, rapEntries, now);
+
+  // RAP is a DAILY digest, not an hourly alert. This runs on the hourly tick,
+  // so it has to decide for itself whether today's has already gone out.
+  //
+  // The "already sent" marker is stored rather than held in memory: the bot
+  // restarts on every deploy, and an in-memory flag would let a few deploys in
+  // one afternoon post the same summary several times.
+  if (shouldPostRapSummary(now)) {
+    await checkRapAlerts(client, rapEntries, now);
+    setMeta('rap_summary_last_day', utcDayKey(now));
+  }
+}
+
+/** YYYY-MM-DD in UTC, the granularity the daily summary is keyed on. */
+function utcDayKey(ts) {
+  return new Date(ts * 1000).toISOString().slice(0, 10);
+}
+
+function shouldPostRapSummary(now) {
+  const hourUtc = new Date(now * 1000).getUTCHours();
+  if (hourUtc < RAP_SUMMARY_HOUR_UTC) return false;
+
+  // Once past the target hour, post if today's hasn't gone out. Using ">=" and
+  // a day marker rather than "=== the hour" means a bot that was asleep or
+  // mid-deploy at exactly 17:00 still sends the digest late instead of
+  // skipping the day entirely.
+  return getMeta('rap_summary_last_day') !== utcDayKey(now);
 }
 
 /**
@@ -202,10 +242,48 @@ function hourlyRate(petKey, currentValue, now) {
  * Hourly hatch-rate channels (one per tier)
  * ------------------------------------------------------------------------- */
 
-async function postRateUpdates(client, existsEntries, now) {
+/**
+ * Gargantuans that gained at least one exists count since the previous poll.
+ *
+ * MUST be called before recordReadings() overwrites the stored value for this
+ * poll, otherwise the "previous" reading is the current one and nothing ever
+ * looks newly hatched.
+ */
+export function findNewGargantuanHatches(existsEntries) {
+  const hatched = [];
+
+  for (const entry of existsEntries.values()) {
+    if (entry.tier !== 'gargantuan') continue;
+
+    // getLatestValue returns { value, ts }, NOT a bare number — subtracting the
+    // object directly yields NaN and every comparison silently fails.
+    const previous = getLatestValue('exists', entry.petKey);
+
+    // No prior reading: this is the first time we have seen the pet, which is
+    // not the same as it having just been hatched. Staying quiet here is why
+    // a restart doesn't announce every gargantuan in the game.
+    if (previous == null) continue;
+
+    const previousValue = Number(previous.value);
+    const gained = entry.value - previousValue;
+    if (gained > 0) hatched.push({ ...entry, gained, previous: previousValue });
+  }
+
+  return hatched;
+}
+
+async function postRateUpdates(client, existsEntries, now, gargHatches = []) {
   for (const tier of TIERS) {
     const channels = getChannelsOfKind(tier);
     if (channels.length === 0) continue;
+
+    // Gargantuans are rare enough that an hourly "here are the rates" post is
+    // almost always an empty post saying nothing happened. Announce the actual
+    // event instead, and stay silent otherwise.
+    if (tier === 'gargantuan') {
+      if (gargHatches.length > 0) await postGargantuanHatch(client, channels, gargHatches);
+      continue;
+    }
 
     const meta = TIER_META[tier];
     const ranked = [];
@@ -414,7 +492,7 @@ async function checkRapAlerts(client, rapEntries, now) {
   const fallers = [];
 
   for (const entry of rapEntries.values()) {
-    if (!RAP_ALERT_TIERS.has(entry.tier)) continue;
+    if (!RAP_SUMMARY_TIERS.has(entry.tier)) continue;
     if (entry.value < RAP_MIN_VALUE) continue;
 
     // Compare against a day ago rather than the previous poll: RAP is cached
@@ -494,4 +572,35 @@ async function broadcast(client, rows, payload) {
       console.error(`[tracker] Failed to post ${row.kind} alert to ${row.channel_id}:`, err.message);
     }
   }
+}
+
+/**
+ * Announce a gargantuan hatch as its own event.
+ *
+ * Posts a NEW message rather than editing one in place: a hatch is an event
+ * with a moment attached, and the record of it is the point. Rate boards edit
+ * themselves because "what is the rate right now" has no history worth
+ * keeping — this is the opposite case.
+ */
+async function postGargantuanHatch(client, channels, hatches) {
+  const meta = TIER_META.gargantuan;
+
+  const lines = hatches.map((h) => {
+    const count = h.gained > 1 ? ` ×${h.gained}` : '';
+    return (
+      `${meta.emoji} **${h.name}** (${h.variant})${count}\n` +
+      `└ now **${formatNumber(h.value)}** in existence (was ${formatNumber(h.previous)})`
+    );
+  });
+
+  const total = hatches.reduce((sum, h) => sum + h.gained, 0);
+
+  const embed = new EmbedBuilder()
+    .setTitle(total === 1 ? '🔴 A Gargantuan was hatched!' : `🔴 ${total} Gargantuans were hatched!`)
+    .setColor(meta.color)
+    .setDescription(lines.join('\n\n'))
+    .setFooter({ text: 'Posted only when one actually hatches — no hourly filler.' })
+    .setTimestamp();
+
+  await broadcast(client, channels, { embeds: [embed] });
 }

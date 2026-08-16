@@ -13,6 +13,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { runPoll, runHourlyAlerts } from './lib/tracker.js';
+import { checkAccess, describeInvocation } from './lib/owner.js';
+import { logCommand } from './lib/db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -49,10 +51,35 @@ client.on('interactionCreate', async (interaction) => {
   const command = client.commands.get(interaction.commandName);
   if (!command) return;
 
+  const logBase = {
+    guildId: interaction.guildId,
+    guildName: interaction.guild?.name ?? null,
+    userId: interaction.user.id,
+    username: interaction.user.username,
+    command: interaction.commandName,
+    options: describeInvocation(interaction),
+  };
+
+  // Whitelist check before anything runs. Logged either way — a blocked
+  // attempt is exactly the kind of thing the owner wants to see.
+  const access = checkAccess({
+    commandName: interaction.commandName,
+    guildId: interaction.guildId,
+    userId: interaction.user.id,
+  });
+
+  if (!access.allowed) {
+    safeLog({ ...logBase, outcome: 'blocked' });
+    await interaction.reply({ content: access.reason, ephemeral: true }).catch(() => {});
+    return;
+  }
+
   try {
     await command.execute(interaction);
+    safeLog({ ...logBase, outcome: 'ok' });
   } catch (err) {
     console.error(`[interaction] Error running /${interaction.commandName}:`, err);
+    safeLog({ ...logBase, outcome: `error: ${err.message}`.slice(0, 200) });
     const payload = { content: '❌ Something went wrong running that command.', ephemeral: true };
     if (interaction.deferred || interaction.replied) {
       await interaction.editReply(payload).catch(() => {});
@@ -61,6 +88,15 @@ client.on('interactionCreate', async (interaction) => {
     }
   }
 });
+
+/** Logging must never be the reason a command fails. */
+function safeLog(entry) {
+  try {
+    logCommand(entry);
+  } catch (err) {
+    console.warn('[log] Could not record command use:', err.message);
+  }
+}
 
 const POLL_INTERVAL_MS = (Number(process.env.POLL_INTERVAL_MINUTES) || 10) * 60 * 1000;
 let pollInFlight = false;

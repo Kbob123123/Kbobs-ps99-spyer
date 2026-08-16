@@ -56,6 +56,43 @@ CREATE TABLE IF NOT EXISTS rap_history (
 );
 
 CREATE INDEX IF NOT EXISTS idx_rap_history_key_ts ON rap_history (pet_key, ts DESC);
+
+-- Small key/value store for scheduler bookkeeping that must outlive a restart,
+-- e.g. "has today's daily RAP summary already been posted".
+CREATE TABLE IF NOT EXISTS bot_meta (
+  key   TEXT PRIMARY KEY,
+  value TEXT
+);
+
+-- Servers allowed to use the bot, managed by the owner via /ownermenu.
+--
+-- An EMPTY table means "allow everyone" on purpose. The alternative — empty
+-- means deny — would take every server offline the moment this shipped, and
+-- the owner would have to whitelist their way back in from a bot that no
+-- longer answers them. Enforcement only begins once at least one guild is
+-- listed, which makes turning it on a deliberate act.
+CREATE TABLE IF NOT EXISTS guild_whitelist (
+  guild_id TEXT PRIMARY KEY,
+  note     TEXT,
+  added_by TEXT,
+  added_at INTEGER NOT NULL
+);
+
+-- Every command invocation, so the owner can see what each server is doing.
+CREATE TABLE IF NOT EXISTS command_log (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts         INTEGER NOT NULL,
+  guild_id   TEXT,
+  guild_name TEXT,
+  user_id    TEXT NOT NULL,
+  username   TEXT,
+  command    TEXT NOT NULL,
+  options    TEXT,
+  outcome    TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_command_log_ts ON command_log (ts DESC);
+CREATE INDEX IF NOT EXISTS idx_command_log_guild ON command_log (guild_id, ts DESC);
 `);
 
 /* ---------------------------------------------------------------------------
@@ -212,4 +249,97 @@ export function pruneHistory(metric, keepSeconds) {
 export function countRows(metric) {
   const { n } = db.prepare(`SELECT COUNT(*) AS n FROM ${tableFor(metric)}`).get();
   return n;
+}
+
+/* ---------------------------------------------------------------------------
+ * Guild whitelist and command log (owner tooling)
+ * ------------------------------------------------------------------------- */
+
+export function addWhitelistedGuild({ guildId, note, addedBy }) {
+  db.prepare(`
+    INSERT INTO guild_whitelist (guild_id, note, added_by, added_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(guild_id) DO UPDATE SET note = excluded.note
+  `).run(String(guildId), note ?? null, addedBy ? String(addedBy) : null, Math.floor(Date.now() / 1000));
+}
+
+/** Returns true if a row was actually removed. */
+export function removeWhitelistedGuild(guildId) {
+  return db.prepare(`DELETE FROM guild_whitelist WHERE guild_id = ?`).run(String(guildId)).changes > 0;
+}
+
+export function getWhitelistedGuilds() {
+  return db.prepare(`SELECT * FROM guild_whitelist ORDER BY added_at ASC`).all();
+}
+
+export function countWhitelistedGuilds() {
+  return db.prepare(`SELECT COUNT(*) AS n FROM guild_whitelist`).get().n;
+}
+
+export function isGuildWhitelisted(guildId) {
+  if (!guildId) return false;
+  return !!db.prepare(`SELECT 1 FROM guild_whitelist WHERE guild_id = ?`).get(String(guildId));
+}
+
+const COMMAND_LOG_MAX_ROWS = 20000;
+
+export function logCommand({ guildId, guildName, userId, username, command, options, outcome }) {
+  db.prepare(`
+    INSERT INTO command_log (ts, guild_id, guild_name, user_id, username, command, options, outcome)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    Math.floor(Date.now() / 1000),
+    guildId ? String(guildId) : null,
+    guildName ?? null,
+    String(userId),
+    username ?? null,
+    command,
+    options ?? null,
+    outcome
+  );
+
+  // Trim opportunistically rather than on a timer — cheap, and keeps the table
+  // bounded without another scheduled job to forget about.
+  if (Math.random() < 0.01) {
+    db.prepare(`
+      DELETE FROM command_log WHERE id <= (
+        SELECT MAX(id) - ? FROM command_log
+      )
+    `).run(COMMAND_LOG_MAX_ROWS);
+  }
+}
+
+/** Recent command log entries, newest first, optionally filtered to one guild. */
+export function getCommandLog({ guildId = null, limit = 25 } = {}) {
+  if (guildId) {
+    return db
+      .prepare(`SELECT * FROM command_log WHERE guild_id = ? ORDER BY ts DESC LIMIT ?`)
+      .all(String(guildId), limit);
+  }
+  return db.prepare(`SELECT * FROM command_log ORDER BY ts DESC LIMIT ?`).all(limit);
+}
+
+/** Per-guild usage totals, busiest first. */
+export function getCommandLogSummary(limit = 20) {
+  return db
+    .prepare(
+      `SELECT guild_id, guild_name, COUNT(*) AS uses, MAX(ts) AS last_used
+       FROM command_log GROUP BY guild_id ORDER BY uses DESC LIMIT ?`
+    )
+    .all(limit);
+}
+
+/* ---------------------------------------------------------------------------
+ * Scheduler bookkeeping
+ * ------------------------------------------------------------------------- */
+
+export function getMeta(key) {
+  return db.prepare(`SELECT value FROM bot_meta WHERE key = ?`).get(key)?.value ?? null;
+}
+
+export function setMeta(key, value) {
+  db.prepare(
+    `INSERT INTO bot_meta (key, value) VALUES (?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+  ).run(key, String(value));
 }

@@ -35,41 +35,29 @@ try {
     .map((g) => g.trim())
     .filter(Boolean);
 
-  if (guildIds.length > 0) {
-    // Guild-scoped registration is instant, which makes it the right choice
-    // while testing; global registration can take up to an hour to appear.
-    let anyGuildSucceeded = false;
-    for (const guildId of guildIds) {
-      try {
-        await rest.put(Routes.applicationGuildCommands(clientId, guildId), { body: commands });
-        console.log(`[deploy] ✅ Registered to guild ${guildId}.`);
-        anyGuildSucceeded = true;
-      } catch (err) {
-        if (err.code === 50001) {
-          console.log(`[deploy] ⚠️  Skipped guild ${guildId} — the bot isn't in that server.`);
-        } else {
-          console.error(`[deploy] ❌ Failed for guild ${guildId}:`, err.message);
-        }
-      }
-    }
+  // Global registration, always — this bot serves servers beyond the owner's,
+  // and access is controlled by the /ownermenu whitelist at runtime rather
+  // than by which guilds the commands happen to be registered in.
+  //
+  // An earlier version registered guild-only and wiped the global set, which
+  // removed the commands from every other server. Guild scope is still
+  // supported for fast iteration, but it now ADDS a guild copy on top of the
+  // global set rather than replacing it.
+  await rest.put(Routes.applicationCommands(clientId), { body: commands });
+  console.log('[deploy] ✅ Registered globally — may take up to an hour to appear.');
 
-    // Guild and global registrations are separate sets, and Discord shows BOTH
-    // in the picker — so a leftover global set from an earlier deploy makes
-    // every command appear twice. Clearing it is the only way to remove those
-    // duplicates. Only safe because this bot is deliberately guild-scoped; if
-    // it were ever meant to serve other servers, this would strip its commands
-    // from all of them.
-    if (anyGuildSucceeded) {
-      try {
-        await rest.put(Routes.applicationCommands(clientId), { body: [] });
-        console.log('[deploy] 🧹 Cleared the global command set (duplicates of the guild set).');
-      } catch (err) {
-        console.warn('[deploy] ⚠️  Could not clear global commands:', err.message);
+  for (const guildId of guildIds) {
+    // A guild copy appears instantly, so listed servers do not have to wait.
+    try {
+      await rest.put(Routes.applicationGuildCommands(clientId, guildId), { body: commands });
+      console.log(`[deploy] ⚡ Also registered to guild ${guildId} (instant).`);
+    } catch (err) {
+      if (err.code === 50001) {
+        console.log(`[deploy] ⚠️  Skipped guild ${guildId} — the bot isn't in that server.`);
+      } else {
+        console.error(`[deploy] ❌ Failed for guild ${guildId}:`, err.message);
       }
     }
-  } else {
-    await rest.put(Routes.applicationCommands(clientId), { body: commands });
-    console.log('[deploy] ✅ Registered globally — may take up to an hour to appear.');
   }
 } catch (err) {
   console.error('[deploy] Failed:', err);
