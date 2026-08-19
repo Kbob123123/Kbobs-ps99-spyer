@@ -6,7 +6,11 @@ import { renderHistoryChart, TIER_COLORS } from '../lib/graph.js';
 import { resolveThumbnail } from '../lib/thumbnails.js';
 import { formatNumber, displayName } from '../lib/format.js';
 
-const CHART_WINDOW_SECONDS = 7 * 24 * 3600;
+// All-time rather than a fixed window. Readings are stored only when a value
+// CHANGES, so a pet's whole history is a few hundred rows at most and charting
+// the lot costs nothing — while a 7-day window hid exactly the long-run trend
+// the chart exists to show.
+const CHART_WINDOW_SECONDS = 100 * 365 * 24 * 3600;
 
 export const data = new SlashCommandBuilder()
   .setName('pet')

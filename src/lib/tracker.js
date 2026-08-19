@@ -1,6 +1,6 @@
 import { EmbedBuilder, AttachmentBuilder } from 'discord.js';
 import { getAllExists, getAllRap, variantKey, describeVariant } from './ps99Api.js';
-import { getTierMap, reportNewPets, TIERS, TIER_META } from './pets.js';
+import { getTierMap, reportNewPets, TIERS, TIER_META, getPetDetail } from './pets.js';
 import {
   recordReadings,
   upsertPetMetaBatch,
@@ -14,6 +14,7 @@ import {
   countRows,
 } from './db.js';
 import { renderTierRateChart, TIER_COLORS } from './graph.js';
+import { resolveThumbnail } from './thumbnails.js';
 import {
   formatNumber,
   formatCompact,
@@ -25,7 +26,10 @@ import {
 
 const HOUR = 3600;
 
-const HISTORY_KEEP_SECONDS = 30 * 24 * HOUR; // 30 days, for /pet charts
+// Two years. /pet now charts all-time, so the retention window IS the chart's
+// horizon. Affordable because storage is change-only: a pet whose exists count
+// moves a few times a day costs a handful of rows a day, not one per poll.
+const HISTORY_KEEP_SECONDS = 730 * 24 * HOUR;
 
 // How many pets the hatch-rate text list names before summarising the rest.
 //
@@ -42,7 +46,19 @@ const RATE_DROP_FACTOR = 0.5; // hatching <=half last hour's pace
 
 // Below this many hatches/hour the numbers are too small for a ratio to mean
 // anything — a pet going from 1/h to 4/h is not news.
-const MIN_BASELINE_RATE = 40;
+//
+// Per tier, because a single flat number cannot fit both ends of the game.
+// Measured against live data: the MEDIAN titanic variant has 39 in existence
+// in total, and the median gargantuan has 5 — so their hourly hatch rates are
+// single digits. A flat floor of 40/hour meant the titanic and gargantuan
+// alerts could essentially never fire, which is why a titanic sliding from
+// 25/hr to 5/hr passed silently. Huge keeps a high floor; it hatches in
+// volume and would otherwise alert constantly.
+const MIN_BASELINE_RATE_BY_TIER = { gargantuan: 2, titanic: 5, huge: 40 };
+
+function minBaselineRate(tier) {
+  return MIN_BASELINE_RATE_BY_TIER[tier] ?? 40;
+}
 
 // RAP alerts: percentage movement over 24 hours. 15% is a real move in a day
 // without being noise, and it catches a pet that is *starting* to climb rather
@@ -415,7 +431,7 @@ async function checkExistsRateAlerts(client, existsEntries, now) {
 
     // A ratio against a near-zero previous hour is meaningless — 2 hatches
     // becoming 20 is a 10x "spike" that nobody cares about.
-    if (previousRate < MIN_BASELINE_RATE) continue;
+    if (previousRate < minBaselineRate(entry.tier)) continue;
 
     const ratio = currentRate / previousRate;
     const record = { ...entry, currentRate, previousRate, ratio };
@@ -581,26 +597,53 @@ async function broadcast(client, rows, payload) {
  * with a moment attached, and the record of it is the point. Rate boards edit
  * themselves because "what is the rate right now" has no history worth
  * keeping — this is the opposite case.
+ *
+ * One embed per pet rather than one combined list, so each hatch carries its
+ * own artwork. Two gargantuans hatching inside the same ten-minute window is
+ * rare enough that the extra messages are not a flood.
  */
-async function postGargantuanHatch(client, channels, hatches) {
+export async function postGargantuanHatch(client, channels, hatches) {
   const meta = TIER_META.gargantuan;
 
-  const lines = hatches.map((h) => {
-    const count = h.gained > 1 ? ` ×${h.gained}` : '';
-    return (
-      `${meta.emoji} **${h.name}** (${h.variant})${count}\n` +
-      `└ now **${formatNumber(h.value)}** in existence (was ${formatNumber(h.previous)})`
-    );
-  });
+  for (const hatch of hatches) {
+    const detail = await getPetDetail(hatch.name).catch(() => null);
 
-  const total = hatches.reduce((sum, h) => sum + h.gained, 0);
+    // Golden art when a golden one hatched — showing the normal skin for a
+    // golden hatch is a small lie the picture tells louder than the text does.
+    const wantGolden = /golden/i.test(hatch.variant);
+    const art = await resolveThumbnail(
+      wantGolden ? detail?.goldenThumbnail ?? detail?.thumbnail : detail?.thumbnail
+    ).catch(() => null);
 
-  const embed = new EmbedBuilder()
-    .setTitle(total === 1 ? '🔴 A Gargantuan was hatched!' : `🔴 ${total} Gargantuans were hatched!`)
-    .setColor(meta.color)
-    .setDescription(lines.join('\n\n'))
-    .setFooter({ text: 'Posted only when one actually hatches — no hourly filler.' })
-    .setTimestamp();
+    const headline = hatch.gained > 1
+      ? `${meta.emoji} ${hatch.gained} GARGANTUANS HATCHED`
+      : `${meta.emoji} GARGANTUAN HATCHED`;
 
-  await broadcast(client, channels, { embeds: [embed] });
+    const details = [];
+    if (detail?.rarity != null) details.push(`💠 **Rarity:** ${detail.rarity}`);
+    if (detail?.obtainable === false) {
+      details.push('🚫 **Unobtainable** — this can no longer be hatched');
+    }
+
+    const embed = new EmbedBuilder()
+      .setTitle(headline)
+      .setColor(meta.color)
+      .setDescription(
+        `## ${hatch.name}\n` +
+          `\`${hatch.variant}\`\n` +
+          (details.length ? `\n${details.join('\n')}\n` : '') +
+          (detail?.description ? `\n_${detail.description}_` : '')
+      )
+      .addFields(
+        { name: '🌍 Now in existence', value: `**${formatNumber(hatch.value)}**`, inline: true },
+        { name: '⏪ Before', value: formatNumber(hatch.previous), inline: true },
+        { name: '✨ Hatched', value: `+${formatNumber(hatch.gained)}`, inline: true }
+      )
+      .setFooter({ text: 'Posted only when one actually hatches — no hourly filler.' })
+      .setTimestamp();
+
+    if (art) embed.setImage(art);
+
+    await broadcast(client, channels, { embeds: [embed] });
+  }
 }
