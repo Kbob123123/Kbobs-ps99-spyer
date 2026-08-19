@@ -11,6 +11,10 @@ const TYPE_SUBCOMMAND_GROUP = 2;
 // this map degrades to a slightly untidy /help rather than a missing entry.
 const CATEGORIES = [
   { name: '🔎 Look things up', commands: ['pet', 'rap'] },
+  {
+    name: '💰 Cheapest by RAP',
+    commands: ['cheaphuges', 'cheaptitanics', 'cheapgargs'],
+  },
   { name: '🔔 Alerts & channels', commands: ['setratechannel', 'setalertchannel'] },
   { name: '🔧 Setup', commands: ['spyerconfig'] },
   { name: 'ℹ️ Meta', commands: ['help'] },

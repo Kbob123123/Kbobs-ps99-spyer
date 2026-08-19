@@ -206,7 +206,7 @@ function shouldPostRapSummary(now) {
  * letting a later row replace an earlier one made totals jump around, which
  * previously showed up as implausible spikes.
  */
-function collectTieredPets(raw, tierMap) {
+export function collectTieredPets(raw, tierMap) {
   const out = new Map();
 
   for (const entry of raw) {
