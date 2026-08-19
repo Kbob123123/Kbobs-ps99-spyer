@@ -1,20 +1,36 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { formatCompact, formatNumber, displayName } from './format.js';
+import { formatNumber, displayName } from './format.js';
+import {
+  HOUSE,
+  fullNumber,
+  loadWatermark,
+  backdropPlugin,
+  watermarkPlugin,
+  titlePlugin,
+  legendBoxPlugin,
+  footnotePlugin,
+  processTimeNote,
+  houseScales,
+  housePadding,
+} from './chartTheme.js';
+import { resolveThumbnail } from './thumbnails.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FONT_DIR = path.join(__dirname, '..', '..', 'assets', 'fonts');
 
-// Discord's dark message surface. Every colour below was validated against
-// THIS surface, not a generic dark grey — a palette that passes on #1a1a19 can
-// fail here.
-export const SURFACE = '#2b2d31';
+// The house surface, shared with the clan and league bots.
+//
+// NOTE for the tier palette below: those colours were validated against the
+// OLD #2b2d31 surface. The house surface is darker (#17181b), which only
+// increases their contrast against the background, so every pass still passes.
+// The pair-separation checks are surface-independent and are unaffected.
+export const SURFACE = HOUSE.SURFACE;
 
 // Ink tokens. Text never wears a series colour: the coloured mark beside a
 // label carries identity, the text stays neutral so it reads as text.
-const INK = '#e8e8e6';
-const INK_MUTED = '#a8a8a4';
-const GRID = 'rgba(255,255,255,0.07)';
+const INK = HOUSE.INK;
+const INK_MUTED = HOUSE.INK_MUTED;
 
 /**
  * Tier accent colours.
@@ -110,14 +126,20 @@ async function render(width, height, config) {
  *
  * @param {{name: string, variant: string, value: number}[]} items ranked, highest first
  */
-export async function renderTierRateChart(tier, tierLabel, items) {
+export async function renderTierRateChart(tier, tierLabel, items, { art } = {}) {
   if (!items || items.length === 0) return null;
+  const startedAt = Date.now();
 
   const rows = items.slice(0, 12);
   // Bar thickness is fixed rather than stretched to fill, so a chart of 3 pets
-  // doesn't render three enormous slabs.
-  const height = Math.max(220, 70 + rows.length * 30);
+  // doesn't render three enormous slabs. The extra 60px is the house title
+  // strip and footnote row, which need reserved space above and below.
+  const height = Math.max(280, 130 + rows.length * 30);
   const color = TIER_COLORS[tier] ?? EXISTS_COLOR;
+
+  // The tier's leading pet is the subject of the chart, so its art is the
+  // watermark. Falls back to nothing, which renders a plain plot.
+  const watermark = await loadWatermark(await resolveThumbnail(art));
 
   const buffer = await render(900, height, {
     type: 'bar',
@@ -140,16 +162,14 @@ export async function renderTierRateChart(tier, tierLabel, items) {
     options: {
       indexAxis: 'y',
       responsive: false,
-      layout: { padding: { top: 12, right: 72, bottom: 8, left: 16 } },
+      // Title strip above, footnote row below — both painted by house plugins
+      // into this reserved space.
+      layout: { padding: { top: 62, right: 78, bottom: 26, left: 16 } },
       plugins: {
-        legend: { display: false }, // single series — the title says what this is
-        title: {
-          display: true,
-          text: `${tierLabel} hatched — last hour`,
-          color: INK,
-          font: { size: 16, weight: 'bold' },
-          padding: { bottom: 12 },
-        },
+        // Drawn by the house plugins instead, so Chart.js's own must be off or
+        // they would draw twice, in the wrong style and the wrong place.
+        legend: { display: false },
+        title: { display: false },
         // Every bar is directly labelled with its value, so the x-axis is
         // redundant scaffolding and is switched off below.
         datalabels: undefined,
@@ -167,7 +187,19 @@ export async function renderTierRateChart(tier, tierLabel, items) {
         },
       },
     },
-    plugins: [valueLabelPlugin(rows.map((r) => formatNumber(r.value)))],
+    plugins: [
+      backdropPlugin(),
+      watermarkPlugin(watermark),
+      titlePlugin({ title: tierLabel, subtitle: 'Hatched — last hour' }),
+      // No legend box. One series, already named by the title, and every bar
+      // carries its own value label — a box here only collided with the top
+      // bar's number and named something the reader already knew.
+      footnotePlugin({
+        left: processTimeNote(startedAt),
+        right: `${rows.length} of ${items.length} variants`,
+      }),
+      valueLabelPlugin(rows.map((r) => formatNumber(r.value))),
+    ],
   });
 
   return buffer;
@@ -208,14 +240,17 @@ function valueLabelPlugin(labels) {
  * wherever the two scales happen to land — a visual relationship that is pure
  * artefact. Callers render both and attach two images.
  */
-export async function renderHistoryChart(petLabel, metric, series) {
+export async function renderHistoryChart(petLabel, metric, series, { art } = {}) {
   if (!series || series.length < 2) return null;
+  const startedAt = Date.now();
 
   const isExists = metric === 'exists';
   const color = isExists ? EXISTS_COLOR : RAP_COLOR;
-  const title = isExists ? `${petLabel} — exists over time` : `${petLabel} — RAP over time`;
+  const seriesLabel = isExists ? 'Exists' : 'RAP';
 
-  const buffer = await render(900, 320, {
+  const watermark = await loadWatermark(await resolveThumbnail(art));
+
+  const buffer = await render(900, 400, {
     type: 'line',
     data: {
       labels: series.map((p) => formatTimeLabel(p.ts)),
@@ -239,41 +274,24 @@ export async function renderHistoryChart(petLabel, metric, series) {
     },
     options: {
       responsive: false,
-      layout: { padding: { top: 10, right: 16, bottom: 6, left: 8 } },
+      animation: false,
+      layout: { padding: housePadding({ hasSubtitle: true, hasFootnote: true }) },
       plugins: {
-        legend: { display: false }, // one series; the title names it
-        title: {
-          display: true,
-          text: title,
-          color: INK,
-          font: { size: 16, weight: 'bold' },
-          padding: { bottom: 10 },
-        },
+        // Drawn by the house plugins instead — see the bar chart above.
+        legend: { display: false },
+        title: { display: false },
       },
-      scales: {
-        x: {
-          grid: { display: false },
-          border: { color: GRID },
-          ticks: {
-            color: INK_MUTED,
-            font: { size: 11 },
-            maxRotation: 0,
-            autoSkip: true,
-            maxTicksLimit: 8,
-          },
-        },
-        y: {
-          grid: { color: GRID, drawTicks: false },
-          border: { display: false },
-          ticks: {
-            color: INK_MUTED,
-            font: { size: 11 },
-            callback: (v) => formatCompact(v),
-            maxTicksLimit: 6,
-          },
-        },
-      },
+      // Full numbers on the axis, not compacted: the house rule, and for RAP
+      // in particular the digits are exactly what people compare.
+      scales: houseScales({ yFormat: fullNumber, xTickLimit: 8 }),
     },
+    plugins: [
+      backdropPlugin(),
+      watermarkPlugin(watermark),
+      titlePlugin({ title: petLabel, subtitle: isExists ? 'Exists over time' : 'RAP over time' }),
+      legendBoxPlugin([{ label: seriesLabel, color }]),
+      footnotePlugin({ left: processTimeNote(startedAt), right: `${series.length} readings` }),
+    ],
   });
 
   return buffer;

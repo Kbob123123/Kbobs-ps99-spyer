@@ -98,9 +98,14 @@ export async function execute(interaction) {
     const existsSeries = getSeries('exists', normal.key, CHART_WINDOW_SECONDS);
     const rapSeries = getSeries('rap', normal.key, CHART_WINDOW_SECONDS);
 
+    // The same art the embed thumbnail uses, watermarked behind both plots.
+    const chartArt = normal.variant?.includes('Golden')
+      ? detail?.goldenThumbnail ?? detail?.thumbnail
+      : detail?.thumbnail;
+
     const [existsChart, rapChart] = await Promise.all([
-      renderHistoryChart(label, 'exists', existsSeries).catch(() => null),
-      renderHistoryChart(label, 'rap', rapSeries).catch(() => null),
+      renderHistoryChart(label, 'exists', existsSeries, { art: chartArt }).catch(() => null),
+      renderHistoryChart(label, 'rap', rapSeries, { art: chartArt }).catch(() => null),
     ]);
 
     if (existsChart) {

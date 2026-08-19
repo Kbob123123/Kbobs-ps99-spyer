@@ -353,10 +353,21 @@ async function postRateUpdates(client, existsEntries, now, gargHatches = []) {
 
       embed.setDescription(`${lines.join('\n')}\n\n${summary}`);
 
+      // Art for the tier's top pet, watermarked behind the plot. Resolved
+      // here rather than in graph.js because the pet detail lookup is this
+      // module's concern, and a failure must not cost us the chart.
+      const topPet = ranked[0];
+      const topArt = topPet
+        ? await getPetDetail(topPet.name)
+            .then((d) => (/golden/i.test(topPet.variant) ? d?.goldenThumbnail ?? d?.thumbnail : d?.thumbnail))
+            .catch(() => null)
+        : null;
+
       const chart = await renderTierRateChart(
         tier,
         meta.label,
-        ranked.map((r) => ({ name: r.name, variant: r.variant, value: r.rate }))
+        ranked.map((r) => ({ name: r.name, variant: r.variant, value: r.rate })),
+        { art: topArt }
       ).catch((err) => {
         console.warn(`[tracker] Chart render failed for ${tier}:`, err.message);
         return null;
