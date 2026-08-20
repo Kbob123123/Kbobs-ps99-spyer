@@ -84,6 +84,20 @@ export async function buildCheapEmbed(tier, variant, limit = DEFAULT_LIMIT) {
     .setDescription(capToFieldLimit(lines, '_None._', DESCRIPTION_LIMIT))
     .setTimestamp();
 
+  // A summary row for the cheapest entry, matching /rap. Fifteen lines of
+  // near-identical formatting need something to anchor on, and the whole
+  // point of the command is the top row.
+  const cheapestExists = existsEntries.get(cheapest[0].petKey)?.value;
+  embed.addFields(
+    { name: 'Cheapest', value: `**${displayName(cheapest[0].name, cheapest[0].variant)}**`, inline: true },
+    { name: 'RAP', value: `**${formatNumber(cheapest[0].value)}**`, inline: true },
+    {
+      name: 'In existence',
+      value: cheapestExists != null ? `**${formatNumber(cheapestExists)}**` : '—',
+      inline: true,
+    }
+  );
+
   // Say plainly what was excluded and why. A reader comparing this against the
   // in-game list will otherwise wonder where the zero-RAP entries went.
   const unpriced = inTier.length - priced.length;
