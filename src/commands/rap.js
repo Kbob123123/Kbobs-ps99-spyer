@@ -77,10 +77,10 @@ export async function execute(interaction) {
   const top = shown[0];
   if (top) {
     embed.addFields(
-      { name: 'Top match', value: `**${displayName(top.name, top.variant)}**`, inline: true },
-      { name: 'RAP', value: `**${formatNumber(top.value)}**`, inline: true },
+      { name: '🏆 Top match', value: `**${displayName(top.name, top.variant)}**`, inline: true },
+      { name: '💰 RAP', value: `**${formatNumber(top.value)}**`, inline: true },
       {
-        name: 'In existence',
+        name: '🥚 In existence',
         value: top.exists != null ? `**${formatNumber(top.exists)}**` : '—',
         inline: true,
       }

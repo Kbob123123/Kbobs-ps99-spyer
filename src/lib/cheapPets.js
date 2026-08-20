@@ -89,10 +89,10 @@ export async function buildCheapEmbed(tier, variant, limit = DEFAULT_LIMIT) {
   // point of the command is the top row.
   const cheapestExists = existsEntries.get(cheapest[0].petKey)?.value;
   embed.addFields(
-    { name: 'Cheapest', value: `**${displayName(cheapest[0].name, cheapest[0].variant)}**`, inline: true },
-    { name: 'RAP', value: `**${formatNumber(cheapest[0].value)}**`, inline: true },
+    { name: '🏷️ Cheapest', value: `**${displayName(cheapest[0].name, cheapest[0].variant)}**`, inline: true },
+    { name: '💰 RAP', value: `**${formatNumber(cheapest[0].value)}**`, inline: true },
     {
-      name: 'In existence',
+      name: '🥚 In existence',
       value: cheapestExists != null ? `**${formatNumber(cheapestExists)}**` : '—',
       inline: true,
     }

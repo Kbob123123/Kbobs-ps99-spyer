@@ -69,7 +69,7 @@ export async function execute(interaction) {
   const ordered = [...variants.values()].sort((a, b) => (b.exists ?? 0) - (a.exists ?? 0));
   if (ordered.length > 0) {
     embed.addFields({
-      name: 'Variants',
+      name: '✨ Variants',
       value: ordered
         .map((v) => {
           const bits = [`**${v.variant}**`];

@@ -31,7 +31,7 @@ export async function execute(interaction) {
     .setColor(0x3987e5)
     .setDescription(lines.join('\n'))
     .addFields({
-      name: 'History collected',
+      name: '📦 History collected',
       value:
         `${formatNumber(countRows('exists'))} exists readings · ` +
         `${formatNumber(countRows('rap'))} RAP readings\n` +
