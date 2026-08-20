@@ -13,6 +13,7 @@ import {
   processTimeNote,
   houseScales,
   housePadding,
+  flatSafeBounds,
 } from './chartTheme.js';
 import { resolveThumbnail } from './thumbnails.js';
 
@@ -283,7 +284,12 @@ export async function renderHistoryChart(petLabel, metric, series, { art } = {})
       },
       // Full numbers on the axis, not compacted: the house rule, and for RAP
       // in particular the digits are exactly what people compare.
-      scales: houseScales({ yFormat: fullNumber, xTickLimit: 8 }),
+      scales: houseScales({
+        yFormat: fullNumber,
+        xTickLimit: 8,
+        // A pet whose RAP has not moved would otherwise collapse the axis.
+        yBounds: flatSafeBounds(series.map((p) => p.value)),
+      }),
     },
     plugins: [
       backdropPlugin(),

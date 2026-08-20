@@ -444,7 +444,7 @@ function roundRect(ctx, x, y, w, h, r) {
  * `yTickLimit` stays low because full numbers are wide — six 13-character
  * labels is already a lot of ink down the left edge.
  */
-export function houseScales({ xTickLimit = 8, yTickLimit = 6, yFormat = fullNumber } = {}) {
+export function houseScales({ xTickLimit = 8, yTickLimit = 6, yFormat = fullNumber, yBounds = null } = {}) {
   return {
     x: {
       grid: { display: false },
@@ -458,6 +458,8 @@ export function houseScales({ xTickLimit = 8, yTickLimit = 6, yFormat = fullNumb
       },
     },
     y: {
+      // Explicit bounds when the caller computed them — see flatSafeBounds.
+      ...(yBounds ? { min: yBounds.min, max: yBounds.max } : {}),
       grid: { color: HOUSE.GRID, drawTicks: false },
       border: { display: false },
       ticks: {
@@ -469,6 +471,36 @@ export function houseScales({ xTickLimit = 8, yTickLimit = 6, yFormat = fullNumb
       },
     },
   };
+}
+
+/**
+ * Y-axis bounds that stay readable when the series barely moves.
+ *
+ * Chart.js auto-scales the axis to the data range. That is right until the
+ * range is tiny or zero — a player whose points have not changed since a
+ * battle ended produces a dead-flat line, the axis collapses to a sliver, and
+ * every gridline reads the same number. The result looks like a rendering
+ * fault rather than the accurate statement it is.
+ *
+ * Returns null when the data has enough spread to scale itself, so the normal
+ * case is untouched.
+ */
+export function flatSafeBounds(values, { minSpreadFraction = 0.002 } = {}) {
+  const nums = values.map(Number).filter((v) => Number.isFinite(v));
+  if (nums.length === 0) return null;
+
+  const min = Math.min(...nums);
+  const max = Math.max(...nums);
+  const spread = max - min;
+  const magnitude = Math.max(Math.abs(min), Math.abs(max));
+
+  // Enough movement to speak for itself.
+  if (magnitude > 0 && spread / magnitude >= minSpreadFraction) return null;
+
+  // A flat series at zero has no magnitude to scale against, so fall back to a
+  // fixed window; otherwise pad proportionally around the value.
+  const pad = magnitude > 0 ? magnitude * 0.05 : 1;
+  return { min: Math.max(0, min - pad), max: max + pad };
 }
 
 /**
