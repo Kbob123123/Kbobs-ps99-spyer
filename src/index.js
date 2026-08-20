@@ -8,7 +8,7 @@ process.on('warning', (warning) => {
   console.warn(warning);
 });
 
-import { Client, GatewayIntentBits, Collection } from 'discord.js';
+import { Client, GatewayIntentBits, Collection, Events } from 'discord.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -198,7 +198,10 @@ async function runAlertTick() {
   }
 }
 
-client.once('ready', async () => {
+// Events.ClientReady, not the 'ready' string. discord.js renamed this to
+// distinguish it from the gateway READY event; 'ready' still fires in v14 but
+// logs a deprecation warning on every boot and stops firing entirely in v15.
+client.once(Events.ClientReady, async () => {
   // Sweep servers joined while the bot was offline, or before the whitelist
   // existed. Without this the whitelist only ever applies to future invites
   // and everything already joined stays forever.

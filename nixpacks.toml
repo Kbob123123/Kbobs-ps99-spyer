@@ -1,3 +1,31 @@
+# INERT UNDER THE CURRENT BUILDER — kept deliberately. Read before deleting.
+#
+# Railway builds this service with RAILPACK, not Nixpacks (confirmed against
+# the live service config). Railpack does not read this file, so nothing
+# below is applied today. railway.json used to claim NIXPACKS, which made
+# this look active when it was not.
+#
+# Why charts still render without any of these libraries: canvas 3.x ships a
+# PREBUILT binary and bundles its whole cairo/pango dependency chain next to
+# canvas.node in build/Release. The three crashes documented below all
+# happened on canvas 2.x, which compiled against SYSTEM libraries and so
+# needed them present. The dependency did not go away — it moved inside the
+# package.
+#
+# That also explains the harmless "Fontconfig error: Cannot load default
+# config file" on startup: the bundled fontconfig finds no system config.
+# It costs nothing because graph.js registers the bundled DejaVu font
+# explicitly rather than relying on system font discovery.
+#
+# WHEN THIS FILE MATTERS AGAIN: if canvas ever has no prebuild for the Node
+# version or ABI in use, npm falls back to compiling from source and every
+# library below becomes required again. The symptom is ERR_DLOPEN_FAILED or
+# an "undefined symbol" at first chart render — graph.js catches it and logs
+# "[graph] Chart rendering unavailable", so the bot survives and the log
+# says so. The fix at that point is to switch the service builder to
+# NIXPACKS so this file takes effect.
+#
+# ---------------------------------------------------------------------------
 # Extra system libraries needed at runtime by the `canvas` npm package (used
 # by chartjs-node-canvas to render the member-comparison graph). Without
 # these, Railway's default Nixpacks image is missing shared libraries that
