@@ -15,6 +15,7 @@ import {
 } from './db.js';
 import { renderTierRateChart, TIER_COLORS } from './graph.js';
 import { resolveThumbnail } from './thumbnails.js';
+import { runStoreWatch } from './storeWatcher.js';
 import {
   formatNumber,
   formatCompact,
@@ -143,6 +144,14 @@ export async function runPoll(client) {
   );
 
   await postRateUpdates(client, existsEntries, now, gargHatches);
+
+  // Shop watch rides the same 10-minute poll. Isolated so a Roblox outage
+  // costs the leak feed, never the pet tracking that is the bot's main job.
+  try {
+    await runStoreWatch(client);
+  } catch (err) {
+    console.warn('[store] Watch failed:', err.message);
+  }
 
   pruneHistory('exists', HISTORY_KEEP_SECONDS);
   pruneHistory('rap', HISTORY_KEEP_SECONDS);

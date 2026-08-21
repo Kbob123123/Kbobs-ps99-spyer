@@ -4,6 +4,7 @@ import { setChannel, clearChannel } from '../lib/db.js';
 const ALERT_LABELS = {
   exists: 'Hatch rate spike/drop',
   rap: 'RAP swing',
+  store: 'Shop leak',
 };
 
 // One command for both alert types, same reasoning as /setratechannel.
@@ -18,7 +19,8 @@ export const data = new SlashCommandBuilder()
       .setRequired(true)
       .addChoices(
         { name: 'Hatch rate spikes & drops', value: 'exists' },
-        { name: 'RAP swings', value: 'rap' }
+        { name: 'RAP swings', value: 'rap' },
+        { name: 'Shop leaks (new gamepasses & products)', value: 'store' }
       )
   )
   .addChannelOption((opt) =>

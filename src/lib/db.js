@@ -59,6 +59,35 @@ CREATE INDEX IF NOT EXISTS idx_rap_history_key_ts ON rap_history (pet_key, ts DE
 
 -- Small key/value store for scheduler bookkeeping that must outlive a restart,
 -- e.g. "has today's daily RAP summary already been posted".
+-- Gamepasses and developer products seen in a monitored universe.
+--
+-- This is the baseline the leak detector diffs against: anything present in
+-- the API but missing here is NEW, and anything whose name, price or sale
+-- status differs has CHANGED. Both are worth announcing, and the change case
+-- is the more valuable of the two — a gamepass sitting unreleased under the
+-- name "TEMPORARY NAME!" is only interesting at the moment it gets a real one.
+--
+-- first_seen is ours, not Roblox's. Their "created" is when the studio made
+-- the item, which can be long before we ever looked; first_seen is when it
+-- entered OUR record, and only the second one can tell "new to the game" from
+-- "new to us" on the very first pass.
+--
+-- (No backticks anywhere in this block: the whole schema is one JS template
+-- literal, and a backtick in a SQL comment silently terminates it.)
+CREATE TABLE IF NOT EXISTS store_items (
+  universe_id  TEXT NOT NULL,
+  kind         TEXT NOT NULL,          -- product | gamepass
+  item_id      TEXT NOT NULL,
+  name         TEXT NOT NULL,
+  price        INTEGER,
+  is_for_sale  INTEGER NOT NULL DEFAULT 0,
+  icon_asset   TEXT,
+  created      TEXT,
+  updated      TEXT,
+  first_seen   INTEGER NOT NULL,
+  PRIMARY KEY (universe_id, kind, item_id)
+);
+
 CREATE TABLE IF NOT EXISTS bot_meta (
   key   TEXT PRIMARY KEY,
   value TEXT
@@ -349,6 +378,72 @@ export function getCommandLogSummary(limit = 20) {
 /* ---------------------------------------------------------------------------
  * Scheduler bookkeeping
  * ------------------------------------------------------------------------- */
+
+/* ---------------------------------------------------------------------------
+ * Store items (gamepasses + developer products)
+ * ------------------------------------------------------------------------- */
+
+/** Everything we hold for a universe, keyed "kind:itemId". */
+export function getStoreItems(universeId) {
+  const rows = db.prepare(`SELECT * FROM store_items WHERE universe_id = ?`).all(String(universeId));
+  return new Map(rows.map((r) => [`${r.kind}:${r.item_id}`, r]));
+}
+
+/** True when we have never recorded anything for this universe. */
+export function isStoreBaselineEmpty(universeId) {
+  const { n } = db.prepare(`SELECT COUNT(*) AS n FROM store_items WHERE universe_id = ?`).get(String(universeId));
+  return n === 0;
+}
+
+/** Insert or update a batch of items in one transaction. */
+export function upsertStoreItems(items) {
+  if (items.length === 0) return;
+
+  const stmt = db.prepare(`
+    INSERT INTO store_items
+      (universe_id, kind, item_id, name, price, is_for_sale, icon_asset, created, updated, first_seen)
+    VALUES (@universeId, @kind, @itemId, @name, @price, @isForSale, @iconAsset, @created, @updated, @firstSeen)
+    ON CONFLICT(universe_id, kind, item_id) DO UPDATE SET
+      name        = excluded.name,
+      price       = excluded.price,
+      is_for_sale = excluded.is_for_sale,
+      icon_asset  = excluded.icon_asset,
+      updated     = excluded.updated
+      -- first_seen is deliberately NOT updated: it records when WE first saw
+      -- the item, and overwriting it would erase that forever.
+  `);
+
+  const now = Math.floor(Date.now() / 1000);
+
+  db.exec('BEGIN');
+  try {
+    for (const item of items) {
+      stmt.run({
+        universeId: String(item.universeId),
+        kind: item.kind,
+        itemId: String(item.itemId),
+        name: item.name ?? '',
+        price: item.priceInRobux ?? null,
+        isForSale: item.isForSale ? 1 : 0,
+        iconAsset: item.iconAssetId != null ? String(item.iconAssetId) : null,
+        created: item.created ?? null,
+        updated: item.updated ?? null,
+        firstSeen: now,
+      });
+    }
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+export function countStoreItems(universeId) {
+  return db
+    .prepare(`SELECT kind, COUNT(*) AS n FROM store_items WHERE universe_id = ? GROUP BY kind`)
+    .all(String(universeId))
+    .reduce((acc, r) => ({ ...acc, [r.kind]: r.n }), { product: 0, gamepass: 0 });
+}
 
 export function getMeta(key) {
   return db.prepare(`SELECT value FROM bot_meta WHERE key = ?`).get(key)?.value ?? null;

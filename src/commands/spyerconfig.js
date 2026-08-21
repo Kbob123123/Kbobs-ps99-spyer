@@ -9,6 +9,7 @@ const KIND_LABELS = {
   gargantuan: `${TIER_META.gargantuan.emoji} Gargantuan hatch rates`,
   exists: '⚡ Hatch rate spike/drop alerts',
   rap: '💰 RAP swing alerts',
+  store: '🛒 Shop leaks (new gamepasses & products)',
 };
 
 export const data = new SlashCommandBuilder()
