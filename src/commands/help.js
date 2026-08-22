@@ -16,7 +16,7 @@ const CATEGORIES = [
     commands: ['cheaphuges', 'cheaptitanics', 'cheapgargs'],
   },
   { name: '🔔 Alerts & channels', commands: ['setratechannel', 'setalertchannel'] },
-  { name: '🔧 Setup', commands: ['spyerconfig'] },
+  { name: '🔧 Setup', commands: ['spyerconfig', 'botupdchannel'] },
   { name: 'ℹ️ Meta', commands: ['help'] },
   { name: '🔐 Owner only', commands: ['ownermenu'] },
 ];
