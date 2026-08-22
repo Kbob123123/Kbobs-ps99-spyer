@@ -8,7 +8,7 @@ process.on('warning', (warning) => {
   console.warn(warning);
 });
 
-import { Client, GatewayIntentBits, Collection, Events } from 'discord.js';
+import { Client, GatewayIntentBits, Collection, Events, ActivityType } from 'discord.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -217,6 +217,17 @@ client.once(Events.ClientReady, async () => {
   console.log('[whitelist] ' + client.guilds.cache.size + ' approved server(s) remain' + (left > 0 ? '; left ' + left + ' unapproved.' : '.'));
 
   console.log(`Logged in as ${client.user.tag}.`);
+
+  // The activity line under the bot's name in the member list. Purely
+  // cosmetic, so a failure is swallowed — presence is never worth a crash.
+  try {
+    client.user.setPresence({
+      status: 'online',
+      activities: [{ name: 'PS99 hatch rates & RAP', type: ActivityType.Watching }],
+    });
+  } catch (err) {
+    console.warn('[presence] Could not set activity:', err.message);
+  }
 
   // Announce any release that shipped since the last one we announced. Wrapped
   // because the changelog must never be the reason the bot fails to start —

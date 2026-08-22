@@ -19,6 +19,16 @@
 
 export const CHANGELOG = [
   {
+    version: '2.2.0',
+    date: '2026-08-22',
+    lines: [
+      '**New pet alerts.** `/setalertchannel type:New pets & first hatches` now posts a message with artwork the moment a new Huge, Titanic or Gargantuan appears in the game — and a second one the first time anybody actually hatches one.',
+      '**Game update & restart alerts.** `/setalertchannel type:Game updates & restarts` tells you when PS99 publishes an update (with the new event name, like `[PIÑATA MAZE]`) and when the servers are restarting, so you know to rejoin.',
+      '**Shop leak alerts now link to the item.** Developer products were silently missing their link entirely; gamepasses link straight to the store page.',
+      'The bot now shows what it is watching in the member list.',
+    ],
+  },
+  {
     version: '2.1.0',
     date: '2026-08-22',
     lines: [
