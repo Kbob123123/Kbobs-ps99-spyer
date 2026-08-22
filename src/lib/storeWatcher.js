@@ -31,9 +31,15 @@ import { formatNumber } from './format.js';
 // The universes worth watching. The live game is where new items actually
 // appear — the dev game holds a single product from 2025 and no gamepasses,
 // so it is included only as a cheap extra, not as the primary source.
+// rootPlaceId is what makes a developer product linkable. It was missing here
+// until now, and itemLink() reads `universe?.rootPlaceId` — so every product
+// alert quietly shipped with no link field at all while gamepasses got one.
+// Both values verified live against
+// games.roproxy.com/v1/games?universeIds=... on 2026-08-22. A place ID is
+// permanent for a published game, so these are safe as constants.
 export const WATCHED_UNIVERSES = [
-  { id: '3317771874', label: 'Pet Simulator 99', emoji: '🐾' },
-  { id: '5349377275', label: 'PS99 Dev Game', emoji: '🛠️' },
+  { id: '3317771874', rootPlaceId: '8737899170', label: 'Pet Simulator 99', emoji: '🐾' },
+  { id: '5349377275', rootPlaceId: '15502302041', label: 'PS99 Dev Game', emoji: '🛠️' },
 ];
 
 const CHANNEL_KIND = 'store';
@@ -105,8 +111,16 @@ const KIND_LABEL = { product: '🛒 Developer product', gamepass: '🎟️ Gamep
  * rather than a URL that 404s.
  */
 function itemLink(item, universe) {
-  if (item.kind === 'gamepass') return `https://www.roblox.com/game-pass/${item.itemId}`;
-  return universe?.rootPlaceId ? `https://www.roblox.com/games/${universe.rootPlaceId}` : null;
+  if (item.kind === 'gamepass') {
+    return { url: `https://www.roblox.com/game-pass/${item.itemId}`, label: 'View gamepass' };
+  }
+  // Deliberately labelled as the GAME, not the item. A product has no public
+  // page, so calling this "Open on Roblox" next to a product name implies a
+  // page that does not exist and lands the reader somewhere they did not
+  // expect. Naming the destination is the honest version of the fallback.
+  return universe?.rootPlaceId
+    ? { url: `https://www.roblox.com/games/${universe.rootPlaceId}`, label: `Play ${universe.label}` }
+    : null;
 }
 
 /** Build the embed for one event. */
@@ -157,7 +171,7 @@ export async function buildStoreEmbed(event, universe) {
   );
 
   const link = itemLink(item, universe);
-  if (link) embed.addFields({ name: '🔗 Link', value: `[Open on Roblox](${link})`, inline: false });
+  if (link) embed.addFields({ name: '🔗 Link', value: `[${link.label}](${link.url})`, inline: false });
 
   // The item's own icon. Decoration, so a failure costs nothing.
   if (item.iconAssetId) {
