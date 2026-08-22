@@ -7,6 +7,28 @@ const ALERT_LABELS = {
   store: 'Shop leak',
 };
 
+/**
+ * What each alert actually does, shown back on confirmation.
+ *
+ * A map rather than a ternary. This was `type === 'exists' ? a : b`, so adding
+ * a third type silently gave shop leaks the RAP description — the label said
+ * "Shop leak" and the sentence underneath described pet prices. A lookup keyed
+ * by type cannot drift that way: a missing entry shows nothing rather than
+ * confidently showing the wrong thing.
+ */
+const ALERT_DETAILS = {
+  exists:
+    'Checked once an hour: fires when a Titanic/Gargantuan pet hatches at 2x or more, ' +
+    'or half or less, of its previous hour. Needs ~2 hours of history first.',
+  rap:
+    "Checked once an hour: fires when a Titanic/Gargantuan pet's RAP triples or falls " +
+    'to a third within 24 hours.',
+  store:
+    'Checked every 10 minutes: fires when a gamepass or developer product is added, ' +
+    'renamed, or goes on sale in Pet Simulator 99. A placeholder name turning into a ' +
+    'real one is flagged as a reveal.',
+};
+
 // One command for both alert types, same reasoning as /setratechannel.
 export const data = new SlashCommandBuilder()
   .setName('setalertchannel')
@@ -45,10 +67,5 @@ export async function execute(interaction) {
 
   setChannel(interaction.guildId, type, channel.id);
 
-  const detail =
-    type === 'exists'
-      ? 'Checked once an hour: fires when a Titanic/Gargantuan pet hatches at 2x or more, or half or less, of its previous hour. Needs ~2 hours of history first.'
-      : "Checked once an hour: fires when a Titanic/Gargantuan pet's RAP triples or falls to a third within 24 hours.";
-
-  await interaction.editReply(`✅ **${label}** alerts will post in ${channel}.\n_${detail}_`);
+  await interaction.editReply(`✅ **${label}** alerts will post in ${channel}.\n_${ALERT_DETAILS[type]}_`);
 }
