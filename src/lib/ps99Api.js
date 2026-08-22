@@ -73,6 +73,18 @@ export async function getPetsCollection() {
 }
 
 /**
+ * Any collection by name, e.g. 'Eggs', 'Enchants', 'Hoverboards'.
+ *
+ * Same long TTL as Pets and for the same reason: a collection only changes
+ * when the game ships content. Used to find artwork for categories other than
+ * pets, which is why it exists at all — /api/exists gives an id and a count
+ * and no picture.
+ */
+export async function getCollection(name) {
+  return getJson(`/api/collection/${name}`, PETS_TTL_MS);
+}
+
+/**
  * The Pets collection, bypassing the long cache above.
  *
  * The 6-hour TTL is right for tier classification (a pet's huge/titanic flag

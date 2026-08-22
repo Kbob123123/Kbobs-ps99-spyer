@@ -18,7 +18,7 @@ import { resolveThumbnail } from './thumbnails.js';
 import { runStoreWatch } from './storeWatcher.js';
 import { runGameWatch } from './gameWatcher.js';
 import { recordDiamonds, runEconomyReport } from './economy.js';
-import { detectNewItems, postUpdateSummary } from './items.js';
+import { detectNewItems, postNewItemAlerts } from './items.js';
 import {
   formatNumber,
   formatCompact,
@@ -183,15 +183,9 @@ export async function runPoll(client) {
 
   await postRateUpdates(client, existsEntries, now, gargHatches);
 
-  // New releases and first hatches share a channel: both answer "something
-  // exists now that did not before". Each is isolated so one failing cannot
-  // cost the other, and neither can cost the poll.
-  try {
-    await postNewPetAlerts(client, newPets);
-  } catch (err) {
-    console.warn('[pets] New-pet alert failed:', err.message);
-  }
-
+  // A rare pet being pulled for the first time. Separate from new content —
+  // the scanner below announces what was ADDED, this announces what somebody
+  // finally HATCHED, and they are different events with different channels.
   try {
     await postFirstHatchAlerts(client, firstHatches);
   } catch (err) {
@@ -206,27 +200,21 @@ export async function runPoll(client) {
     console.warn('[store] Watch failed:', err.message);
   }
 
-  // Track every item id across all 26 categories, so an update can be
-  // described by what it shipped. Recorded every poll rather than only when
-  // an update fires: items land in the API slightly before or after the
-  // republish, so a diff taken at the exact moment of the event misses them.
+  // The new-item scanner: anything appearing in any category, announced with
+  // its picture. This owns new content outright — the game-update alert says
+  // the game updated and nothing more, because items reach the API before or
+  // after the republish rather than with it, so a list attached to the update
+  // event was always either empty or crediting the wrong update.
   try {
-    detectNewItems(existsRaw, now);
+    await postNewItemAlerts(client, detectNewItems(existsRaw, now));
   } catch (err) {
-    console.warn('[items] Detection failed:', err.message);
+    console.warn('[items] Scan failed:', err.message);
   }
 
   // Same deal for the game update/restart watch: separate Roblox host, its
   // own try/catch, so an outage there cannot take the poll down either.
   try {
-    const gameEvents = await runGameWatch(client);
-
-    // An update gets a follow-up listing what actually appeared. Skipped
-    // silently when nothing did — a rebalance patch adds no items, and an
-    // empty "what's new" list reads as the bot being broken.
-    if (gameEvents.some((e) => e.type === 'update')) {
-      await postUpdateSummary(client, getChannelsOfKind('game'));
-    }
+    await runGameWatch(client);
   } catch (err) {
     console.warn('[game] Watch failed:', err.message);
   }
@@ -428,92 +416,65 @@ export function findFirstHatches(existsEntries) {
   return hatched;
 }
 
-const NEWPET_KIND = 'newpet';
+// New pets are announced by the new-item scanner (lib/items.js) along with
+// every other category, so there is no separate new-pet announcer here. This
+// channel is only for the first time a rare pet is actually HATCHED.
+const FIRSTHATCH_KIND = 'firsthatch';
 
 /**
- * Announce pets that just appeared in the game's collection.
+ * Announce the first ever hatch of a rare pet.
  *
- * One message each, not a digest. A new pet is the single most interesting
- * thing this bot can report, and batching them into a list is what turns an
- * event into a changelog nobody reads.
- */
-export async function postNewPetAlerts(client, newPets) {
-  if (newPets.length === 0) return;
-
-  const channels = getChannelsOfKind(NEWPET_KIND);
-  if (channels.length === 0) return;
-
-  for (const pet of newPets) {
-    const meta = TIER_META[pet.tier] ?? {};
-    const detail = await getPetDetail(pet.name).catch(() => null);
-    const art = await resolveThumbnail(detail?.thumbnail).catch(() => null);
-
-    const details = [];
-    if (detail?.rarity != null) details.push(`💠 **Rarity:** ${detail.rarity}`);
-    if (detail?.obtainable === false) {
-      details.push('🚫 **Unobtainable** — this cannot be hatched');
-    }
-
-    const embed = new EmbedBuilder()
-      .setTitle(`${meta.emoji ?? '✨'} NEW ${(meta.label ?? 'PET').toUpperCase()} RELEASED`)
-      .setColor(meta.color ?? 0x2ee6c5)
-      .setDescription(
-        `## ${pet.name}\n` +
-          (details.length ? `\n${details.join('\n')}\n` : '') +
-          (detail?.description ? `\n_${detail.description}_` : '')
-      )
-      .setFooter({ text: 'Spotted in the game files the moment it appeared.' })
-      .setTimestamp();
-
-    if (art) embed.setImage(art);
-
-    await broadcast(client, channels, { embeds: [embed] });
-  }
-}
-
-/**
- * Announce the first ever hatch of a pet variant.
+ * This is about somebody PULLING one, not about the pet being added to the
+ * game — new content is the new-item scanner's job. The distinction is the
+ * whole point of the alert: a pet can sit in the files at zero for weeks, and
+ * the moment the first one actually exists is the interesting one.
  *
- * Separate message from the release alert above even when both fire for the
- * same pet in the same pass: "this exists in the game now" and "someone has
- * actually pulled one" are different facts, and the second is the rarer one.
+ * Titanic and Gargantuan only. A Huge going 0 -> 1 happens constantly and
+ * would drown the channel that exists to catch the rare ones.
  */
 export async function postFirstHatchAlerts(client, hatches) {
-  if (hatches.length === 0) return;
+  const rare = hatches.filter((h) => ALERT_TIERS.has(h.tier));
+  if (rare.length === 0) return;
 
-  const channels = getChannelsOfKind(NEWPET_KIND);
+  const channels = getChannelsOfKind(FIRSTHATCH_KIND);
   if (channels.length === 0) return;
 
-  for (const hatch of hatches) {
+  const embeds = [];
+
+  for (const hatch of rare) {
     const meta = TIER_META[hatch.tier] ?? {};
     const detail = await getPetDetail(hatch.name).catch(() => null);
 
-    // Golden art for a golden hatch — same reasoning as the gargantuan alert.
+    // Golden art for a golden hatch — showing the normal skin for a golden
+    // pull is a small lie the picture tells louder than the text does.
     const wantGolden = /golden/i.test(hatch.variant);
     const art = await resolveThumbnail(
       wantGolden ? detail?.goldenThumbnail ?? detail?.thumbnail : detail?.thumbnail
     ).catch(() => null);
 
+    const story = [
+      `# ${hatch.name}`,
+      `${meta.emoji ?? ''} **${meta.label ?? hatch.tier}** · \`${hatch.variant}\``,
+      '',
+      '**Nobody in the game had one of these until now.**',
+    ];
+    if (detail?.rarity != null) story.push(`💠 Rarity: **${detail.rarity}**`);
+    if (detail?.description) story.push(`\n_${detail.description}_`);
+
     const embed = new EmbedBuilder()
-      .setTitle(`🥇 FIRST EVER ${(meta.label ?? 'PET').toUpperCase()} HATCHED`)
+      .setTitle('🥇 WORLD FIRST HATCH')
       .setColor(meta.color ?? 0xfee75c)
-      .setDescription(
-        `## ${hatch.name}\n` +
-          `\`${hatch.variant}\`\n` +
-          `\nNobody had one of these until now.` +
-          (detail?.description ? `\n\n_${detail.description}_` : '')
-      )
-      .addFields({
-        name: '🌍 Now in existence',
-        value: `**${formatNumber(hatch.value)}**`,
-        inline: true,
-      })
-      .setFooter({ text: 'Fires once, on the very first one to exist.' })
+      .setDescription(story.join('\n'))
+      .setFooter({ text: 'Fires once — on the very first one to exist.' })
       .setTimestamp();
 
     if (art) embed.setImage(art);
 
-    await broadcast(client, channels, { embeds: [embed] });
+    embeds.push(embed);
+  }
+
+  for (let i = 0; i < embeds.length; i += 10) {
+    await broadcast(client, channels, { embeds: embeds.slice(i, i + 10) });
   }
 }
 

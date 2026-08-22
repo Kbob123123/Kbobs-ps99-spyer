@@ -19,6 +19,15 @@
 
 export const CHANGELOG = [
   {
+    version: '2.5.0',
+    date: '2026-08-23',
+    lines: [
+      '**New items now come with pictures.** The scanner posts the artwork for new pets, eggs, charms, hoverboards and booths the moment they appear — not just a name in a list.',
+      '**World-first hatches have their own channel.** `/setalertchannel type:World-first hatches` fires when somebody in the game pulls a Titanic or Gargantuan that nobody had before, with the pet shown full size.',
+      '**Game update alerts no longer dump a list of items.** An update announcement says the game updated; the new-item channel says what appeared. If you had the old combined channel set, it has been moved over to new items automatically.',
+    ],
+  },
+  {
     version: '2.4.0',
     date: '2026-08-23',
     lines: [

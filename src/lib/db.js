@@ -566,8 +566,42 @@ export function addKnownPets(rows) {
   }
 }
 
+/**
+ * Rename the old combined 'newpet' channel to 'newitem'.
+ *
+ * 'newpet' used to carry both "a pet was added" and "a pet was hatched for the
+ * first time". Those split into the new-item scanner and the first-hatch
+ * alert, and without this the servers that had already configured it would
+ * silently stop receiving anything — the kind simply would not match any
+ * lookup, with nothing logged and no error anywhere.
+ *
+ * The scanner is the closer descendant of the two, so that is what it becomes.
+ * INSERT OR IGNORE then DELETE rather than UPDATE, because a guild that has
+ * somehow set both would violate the (guild_id, kind) primary key.
+ */
+function migrateNewPetChannels() {
+  const rows = db.prepare(`SELECT * FROM channels WHERE kind = 'newpet'`).all();
+  if (rows.length === 0) return;
+
+  db.exec('BEGIN');
+  try {
+    const insert = db.prepare(
+      `INSERT OR IGNORE INTO channels (guild_id, kind, channel_id) VALUES (?, 'newitem', ?)`
+    );
+    for (const row of rows) insert.run(row.guild_id, row.channel_id);
+    db.prepare(`DELETE FROM channels WHERE kind = 'newpet'`).run();
+    db.exec('COMMIT');
+    console.log(`[db] Migrated ${rows.length} 'newpet' channel(s) to 'newitem'.`);
+  } catch (err) {
+    db.exec('ROLLBACK');
+    console.warn('[db] Could not migrate newpet channels:', err.message);
+  }
+}
+
+migrateNewPetChannels();
+
 /* ---------------------------------------------------------------------------
- * Known items across every category (update summary)
+ * Known items across every category (new-item scanner)
  * ------------------------------------------------------------------------- */
 
 export function isKnownItemsEmpty() {
@@ -596,13 +630,6 @@ export function addKnownItems(rows, ts = Math.floor(Date.now() / 1000)) {
     db.exec('ROLLBACK');
     throw err;
   }
-}
-
-/** Items first seen at or after `since` — what the update summary reports. */
-export function getItemsSeenSince(since) {
-  return db
-    .prepare(`SELECT * FROM known_items WHERE first_seen >= ? ORDER BY category ASC, item_id ASC`)
-    .all(since);
 }
 
 /* ---------------------------------------------------------------------------
