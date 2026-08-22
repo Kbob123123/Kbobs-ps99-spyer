@@ -18,8 +18,11 @@ import { REST, Routes } from 'discord.js';
  * removed every command everywhere else.
  */
 const token = process.env.DISCORD_TOKEN;
-const clientId = process.env.DISCORD_CLIENT_ID;
-const guildId = process.env.DISCORD_GUILD_ID ?? process.argv[2];
+// Accept the legacy names too: the spyer's .env still uses CLIENT_ID and
+// GUILD_ID, and deploy-commands already tolerates both. Failing on a variable
+// name mismatch would look like a broken script rather than a config detail.
+const clientId = process.env.DISCORD_CLIENT_ID ?? process.env.CLIENT_ID;
+const guildId = process.env.DISCORD_GUILD_ID ?? process.env.GUILD_ID ?? process.argv[2];
 
 if (!token || !clientId) {
   console.error('DISCORD_TOKEN and DISCORD_CLIENT_ID must both be set.');
