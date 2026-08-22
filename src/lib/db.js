@@ -93,6 +93,39 @@ CREATE TABLE IF NOT EXISTS bot_meta (
   value TEXT
 );
 
+-- Every tiered pet we have ever seen in the collection.
+--
+-- This is the baseline for "a new pet was released", and it lives on DISK for
+-- one specific reason: the check used to compare against a module-level Set
+-- that started empty on every boot. Railway restarts these services several
+-- times a week, and each restart silently re-baselined — so a pet released
+-- while the bot was down could never be announced, and the first pass after
+-- any restart was guaranteed to find "nothing new" no matter what shipped.
+--
+-- first_seen is ours, not the game's: it records when the pet entered OUR
+-- record, which is the only thing that can separate "new to the game" from
+-- "new to us" on a cold start.
+CREATE TABLE IF NOT EXISTS known_pets (
+  name       TEXT PRIMARY KEY,
+  tier       TEXT,
+  first_seen INTEGER NOT NULL
+);
+
+-- Last reading of the live Roblox game, for update and restart detection.
+--
+-- peak_playing is tracked separately from playing because a restart is only
+-- visible as a COLLAPSE: comparing against the previous poll alone would miss
+-- a restart that happened between two low readings, and would fire on the
+-- ordinary overnight decline. The peak is what the drop is measured from.
+CREATE TABLE IF NOT EXISTS game_state (
+  universe_id  TEXT PRIMARY KEY,
+  name         TEXT,
+  updated      TEXT,
+  playing      INTEGER,
+  peak_playing INTEGER,
+  checked_at   INTEGER NOT NULL
+);
+
 -- Channels that receive the bot's own release announcements.
 --
 -- Its own table rather than another "channels" kind, because it is not a
@@ -460,6 +493,67 @@ export function countStoreItems(universeId) {
     .prepare(`SELECT kind, COUNT(*) AS n FROM store_items WHERE universe_id = ? GROUP BY kind`)
     .all(String(universeId))
     .reduce((acc, r) => ({ ...acc, [r.kind]: r.n }), { product: 0, gamepass: 0 });
+}
+
+/* ---------------------------------------------------------------------------
+ * Known pets (new-release detection)
+ * ------------------------------------------------------------------------- */
+
+/** True when we hold no baseline at all — the very first run. */
+export function isKnownPetsEmpty() {
+  return db.prepare(`SELECT COUNT(*) AS n FROM known_pets`).get().n === 0;
+}
+
+export function getKnownPetNames() {
+  return new Set(db.prepare(`SELECT name FROM known_pets`).all().map((r) => r.name));
+}
+
+/** Record pets as known. Existing rows keep their original first_seen. */
+export function addKnownPets(rows) {
+  if (rows.length === 0) return;
+
+  const stmt = db.prepare(`
+    INSERT INTO known_pets (name, tier, first_seen) VALUES (?, ?, ?)
+    ON CONFLICT(name) DO UPDATE SET tier = excluded.tier
+  `);
+  const now = Math.floor(Date.now() / 1000);
+
+  db.exec('BEGIN');
+  try {
+    for (const r of rows) stmt.run(r.name, r.tier ?? null, now);
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Live game state (update + restart detection)
+ * ------------------------------------------------------------------------- */
+
+export function getGameState(universeId) {
+  return db.prepare(`SELECT * FROM game_state WHERE universe_id = ?`).get(String(universeId)) ?? null;
+}
+
+export function setGameState({ universeId, name, updated, playing, peakPlaying }) {
+  db.prepare(`
+    INSERT INTO game_state (universe_id, name, updated, playing, peak_playing, checked_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(universe_id) DO UPDATE SET
+      name         = excluded.name,
+      updated      = excluded.updated,
+      playing      = excluded.playing,
+      peak_playing = excluded.peak_playing,
+      checked_at   = excluded.checked_at
+  `).run(
+    String(universeId),
+    name ?? null,
+    updated ?? null,
+    playing ?? null,
+    peakPlaying ?? null,
+    Math.floor(Date.now() / 1000)
+  );
 }
 
 /* ---------------------------------------------------------------------------

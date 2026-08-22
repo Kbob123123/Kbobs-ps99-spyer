@@ -5,6 +5,8 @@ const ALERT_LABELS = {
   exists: 'Hatch rate spike/drop',
   rap: 'RAP swing',
   store: 'Shop leak',
+  newpet: 'New pet & first hatch',
+  game: 'Game update & restart',
 };
 
 /**
@@ -27,6 +29,14 @@ const ALERT_DETAILS = {
     'Checked every 10 minutes: fires when a gamepass or developer product is added, ' +
     'renamed, or goes on sale in Pet Simulator 99. A placeholder name turning into a ' +
     'real one is flagged as a reveal.',
+  newpet:
+    'Checked every 10 minutes: one message when a new Huge/Titanic/Gargantuan appears ' +
+    'in the game, and one the first time any variant is actually hatched. Nothing from ' +
+    'before you switched it on is posted.',
+  game:
+    'Checked every 10 minutes: fires when Pet Simulator 99 publishes an update (usually ' +
+    'with a new event tag in the title), and when the player count collapses the way it ' +
+    'does during a server restart.',
 };
 
 // One command for both alert types, same reasoning as /setratechannel.
@@ -42,7 +52,9 @@ export const data = new SlashCommandBuilder()
       .addChoices(
         { name: 'Hatch rate spikes & drops', value: 'exists' },
         { name: 'RAP swings', value: 'rap' },
-        { name: 'Shop leaks (new gamepasses & products)', value: 'store' }
+        { name: 'Shop leaks (new gamepasses & products)', value: 'store' },
+        { name: 'New pets & first hatches', value: 'newpet' },
+        { name: 'Game updates & restarts', value: 'game' }
       )
   )
   .addChannelOption((opt) =>

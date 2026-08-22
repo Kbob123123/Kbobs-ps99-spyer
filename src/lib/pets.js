@@ -1,4 +1,5 @@
 import { getPetsCollection, getPetsCollectionFresh } from './ps99Api.js';
+import { isKnownPetsEmpty, getKnownPetNames, addKnownPets } from './db.js';
 
 // Pet names matching these are dev/test/placeholder entries that occasionally
 // leak into the public collection data. They're excluded from tier
@@ -87,32 +88,40 @@ export async function getThumbnailMap() {
   return map;
 }
 
-// Names seen in the previous tier-map build, so newly released pets can be
-// called out in the logs instead of appearing silently.
-let previouslySeen = null;
-
 /**
- * Log any tiered pets that weren't in the last build.
+ * Tiered pets that are new since the last pass.
  *
- * Worth surfacing: a new Titanic dropping is exactly the moment the tracker
- * matters most, and "did it pick up the new pet?" is otherwise unanswerable
- * without querying the database by hand.
+ * The baseline is on DISK (known_pets), not in a module-level Set. That was
+ * the bug in the original: the Set started empty on every boot, so each of
+ * Railway's frequent restarts silently re-baselined, the first pass after one
+ * always found nothing, and any pet released during downtime could never be
+ * announced at all. Persisting it means the comparison spans restarts, which
+ * is the whole point of a release alert.
+ *
+ * A first run with no baseline records everything and announces NOTHING —
+ * same discipline as the store watcher and the update announcer. Otherwise
+ * switching this on would announce all ~6,300 tracked variants at once.
  */
-export function reportNewPets(tierMap) {
-  const names = new Set(tierMap.keys());
+export function detectNewPets(tierMap) {
+  const rows = [...tierMap.entries()].map(([name, tier]) => ({ name, tier }));
 
-  if (previouslySeen === null) {
-    previouslySeen = names;
+  if (isKnownPetsEmpty()) {
+    addKnownPets(rows);
+    console.log(`[pets] Baseline recorded: ${rows.length} tiered pet(s), nothing announced.`);
     return [];
   }
 
-  const added = [...names].filter((n) => !previouslySeen.has(n));
-  previouslySeen = names;
+  const known = getKnownPetNames();
+  const added = rows.filter((r) => !known.has(r.name));
 
+  // Written immediately, before the caller posts. A new pet is announced from
+  // the returned list, so a send failure costs that one alert rather than
+  // re-announcing the same pet on every poll until it succeeds.
   if (added.length > 0) {
+    addKnownPets(added);
     console.log(
       `[pets] ${added.length} new tiered pet(s) detected: ` +
-        added.map((n) => `${n} (${tierMap.get(n)})`).join(', ')
+        added.map((r) => `${r.name} (${r.tier})`).join(', ')
     );
   }
 

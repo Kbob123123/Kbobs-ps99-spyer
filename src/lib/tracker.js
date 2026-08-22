@@ -1,6 +1,6 @@
 import { EmbedBuilder, AttachmentBuilder } from 'discord.js';
 import { getAllExists, getAllRap, variantKey, describeVariant } from './ps99Api.js';
-import { getTierMap, reportNewPets, TIERS, TIER_META, getPetDetail } from './pets.js';
+import { getTierMap, detectNewPets, TIERS, TIER_META, getPetDetail } from './pets.js';
 import {
   recordReadings,
   upsertPetMetaBatch,
@@ -16,6 +16,7 @@ import {
 import { renderTierRateChart, TIER_COLORS } from './graph.js';
 import { resolveThumbnail } from './thumbnails.js';
 import { runStoreWatch } from './storeWatcher.js';
+import { runGameWatch } from './gameWatcher.js';
 import {
   formatNumber,
   formatCompact,
@@ -103,7 +104,7 @@ const ALERT_TIERS = new Set(['titanic', 'gargantuan']);
  */
 export async function runPoll(client) {
   const tierMap = await getTierMap();
-  reportNewPets(tierMap);
+  const newPets = detectNewPets(tierMap);
   const now = Math.floor(Date.now() / 1000);
 
   const [existsRaw, rapRaw] = await Promise.all([getAllExists(), getAllRap()]);
@@ -126,6 +127,10 @@ export async function runPoll(client) {
   // gargantuan look unchanged and the announcement would never fire.
   const gargHatches = findNewGargantuanHatches(existsEntries);
 
+  // Same ordering requirement, same reason: this reads the PREVIOUS stored
+  // value, which recordReadings below is about to replace.
+  const firstHatches = findFirstHatches(existsEntries);
+
   const existsWritten = recordReadings(
     'exists',
     [...existsEntries.values()].map((e) => ({ petKey: e.petKey, value: e.value })),
@@ -145,12 +150,35 @@ export async function runPoll(client) {
 
   await postRateUpdates(client, existsEntries, now, gargHatches);
 
+  // New releases and first hatches share a channel: both answer "something
+  // exists now that did not before". Each is isolated so one failing cannot
+  // cost the other, and neither can cost the poll.
+  try {
+    await postNewPetAlerts(client, newPets);
+  } catch (err) {
+    console.warn('[pets] New-pet alert failed:', err.message);
+  }
+
+  try {
+    await postFirstHatchAlerts(client, firstHatches);
+  } catch (err) {
+    console.warn('[pets] First-hatch alert failed:', err.message);
+  }
+
   // Shop watch rides the same 10-minute poll. Isolated so a Roblox outage
   // costs the leak feed, never the pet tracking that is the bot's main job.
   try {
     await runStoreWatch(client);
   } catch (err) {
     console.warn('[store] Watch failed:', err.message);
+  }
+
+  // Same deal for the game update/restart watch: separate Roblox host, its
+  // own try/catch, so an outage there cannot take the poll down either.
+  try {
+    await runGameWatch(client);
+  } catch (err) {
+    console.warn('[game] Watch failed:', err.message);
   }
 
   pruneHistory('exists', HISTORY_KEEP_SECONDS);
@@ -295,6 +323,125 @@ export function findNewGargantuanHatches(existsEntries) {
   }
 
   return hatched;
+}
+
+/**
+ * Variants whose exists count just went from zero to something — the first
+ * one of that pet ever hatched.
+ *
+ * The `previous.value === 0` test is doing real work. A zero exists count is
+ * COMMON and means untraded/unhatched, not absent: 197 of 4,440 huge variants
+ * sit at zero. So "0 -> 1" is a genuine world-first, and it is the only
+ * transition that qualifies.
+ *
+ * A missing previous reading is deliberately NOT a first hatch. That is us
+ * seeing the pet for the first time, which says nothing about the game — and
+ * treating it as one would make every fresh database announce thousands of
+ * "first hatches" on its opening poll.
+ */
+export function findFirstHatches(existsEntries) {
+  const hatched = [];
+
+  for (const entry of existsEntries.values()) {
+    // getLatestValue returns { value, ts }, NOT a bare number.
+    const previous = getLatestValue('exists', entry.petKey);
+    if (previous == null) continue;
+
+    if (Number(previous.value) === 0 && entry.value > 0) {
+      hatched.push({ ...entry, gained: entry.value });
+    }
+  }
+
+  return hatched;
+}
+
+const NEWPET_KIND = 'newpet';
+
+/**
+ * Announce pets that just appeared in the game's collection.
+ *
+ * One message each, not a digest. A new pet is the single most interesting
+ * thing this bot can report, and batching them into a list is what turns an
+ * event into a changelog nobody reads.
+ */
+export async function postNewPetAlerts(client, newPets) {
+  if (newPets.length === 0) return;
+
+  const channels = getChannelsOfKind(NEWPET_KIND);
+  if (channels.length === 0) return;
+
+  for (const pet of newPets) {
+    const meta = TIER_META[pet.tier] ?? {};
+    const detail = await getPetDetail(pet.name).catch(() => null);
+    const art = await resolveThumbnail(detail?.thumbnail).catch(() => null);
+
+    const details = [];
+    if (detail?.rarity != null) details.push(`💠 **Rarity:** ${detail.rarity}`);
+    if (detail?.obtainable === false) {
+      details.push('🚫 **Unobtainable** — this cannot be hatched');
+    }
+
+    const embed = new EmbedBuilder()
+      .setTitle(`${meta.emoji ?? '✨'} NEW ${(meta.label ?? 'PET').toUpperCase()} RELEASED`)
+      .setColor(meta.color ?? 0x2ee6c5)
+      .setDescription(
+        `## ${pet.name}\n` +
+          (details.length ? `\n${details.join('\n')}\n` : '') +
+          (detail?.description ? `\n_${detail.description}_` : '')
+      )
+      .setFooter({ text: 'Spotted in the game files the moment it appeared.' })
+      .setTimestamp();
+
+    if (art) embed.setImage(art);
+
+    await broadcast(client, channels, { embeds: [embed] });
+  }
+}
+
+/**
+ * Announce the first ever hatch of a pet variant.
+ *
+ * Separate message from the release alert above even when both fire for the
+ * same pet in the same pass: "this exists in the game now" and "someone has
+ * actually pulled one" are different facts, and the second is the rarer one.
+ */
+export async function postFirstHatchAlerts(client, hatches) {
+  if (hatches.length === 0) return;
+
+  const channels = getChannelsOfKind(NEWPET_KIND);
+  if (channels.length === 0) return;
+
+  for (const hatch of hatches) {
+    const meta = TIER_META[hatch.tier] ?? {};
+    const detail = await getPetDetail(hatch.name).catch(() => null);
+
+    // Golden art for a golden hatch — same reasoning as the gargantuan alert.
+    const wantGolden = /golden/i.test(hatch.variant);
+    const art = await resolveThumbnail(
+      wantGolden ? detail?.goldenThumbnail ?? detail?.thumbnail : detail?.thumbnail
+    ).catch(() => null);
+
+    const embed = new EmbedBuilder()
+      .setTitle(`🥇 FIRST EVER ${(meta.label ?? 'PET').toUpperCase()} HATCHED`)
+      .setColor(meta.color ?? 0xfee75c)
+      .setDescription(
+        `## ${hatch.name}\n` +
+          `\`${hatch.variant}\`\n` +
+          `\nNobody had one of these until now.` +
+          (detail?.description ? `\n\n_${detail.description}_` : '')
+      )
+      .addFields({
+        name: '🌍 Now in existence',
+        value: `**${formatNumber(hatch.value)}**`,
+        inline: true,
+      })
+      .setFooter({ text: 'Fires once, on the very first one to exist.' })
+      .setTimestamp();
+
+    if (art) embed.setImage(art);
+
+    await broadcast(client, channels, { embeds: [embed] });
+  }
 }
 
 async function postRateUpdates(client, existsEntries, now, gargHatches = []) {
