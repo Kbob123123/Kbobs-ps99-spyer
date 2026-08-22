@@ -19,6 +19,14 @@
 
 export const CHANGELOG = [
   {
+    version: '2.6.0',
+    date: '2026-08-23',
+    lines: [
+      '**You can switch the alerts off now.** `/spyeralerts action:pause` silences everything this server gets; add `type:` to pause just one. Your channels are remembered, so `action:resume` brings it all back exactly as it was — no re-setting anything.',
+      '`/spyerconfig` now shows which alerts are paused instead of making a paused one look live.',
+    ],
+  },
+  {
     version: '2.5.0',
     date: '2026-08-23',
     lines: [

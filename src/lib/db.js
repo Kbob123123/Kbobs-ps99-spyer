@@ -13,11 +13,16 @@ db.exec(`
 -- ('huge'|'titanic'|'gargantuan') or an alert type ('rap'|'exists').
 -- message_id lets the recurring rate post edit itself in place rather than
 -- adding a new message every 10 minutes.
+-- enabled is separate from "is a channel set" on purpose. Clearing the channel
+-- is how you remove a setting; disabling is how you silence an alert while
+-- KEEPING where it was pointed, so turning it back on is one command rather
+-- than remembering eight channels and re-entering them all.
 CREATE TABLE IF NOT EXISTS channels (
   guild_id   TEXT NOT NULL,
   kind       TEXT NOT NULL,
   channel_id TEXT NOT NULL,
   message_id TEXT,
+  enabled    INTEGER NOT NULL DEFAULT 1,
   PRIMARY KEY (guild_id, kind)
 );
 
@@ -231,8 +236,42 @@ export function getGuildChannels(guildId) {
   return db.prepare(`SELECT * FROM channels WHERE guild_id = ?`).all(guildId);
 }
 
+/**
+ * Every channel receiving this alert type, across all servers.
+ *
+ * Disabled rows are filtered out HERE rather than at each call site. Every
+ * alert in the bot goes through this one function, so the check cannot be
+ * forgotten when a new alert type is added — which it would be, eventually,
+ * and the failure would be an alert nobody can switch off.
+ */
 export function getChannelsOfKind(kind) {
+  return db.prepare(`SELECT * FROM channels WHERE kind = ? AND enabled = 1`).all(kind);
+}
+
+/** Including disabled ones — for /spyerconfig, which must show what is off. */
+export function getAllChannelsOfKind(kind) {
   return db.prepare(`SELECT * FROM channels WHERE kind = ?`).all(kind);
+}
+
+/**
+ * Turn one alert type on or off for a guild, keeping its channel.
+ *
+ * Returns false when there is nothing configured to toggle, so the command can
+ * say "that was never set up" instead of silently doing nothing.
+ */
+export function setChannelEnabled(guildId, kind, enabled) {
+  return (
+    db
+      .prepare(`UPDATE channels SET enabled = ? WHERE guild_id = ? AND kind = ?`)
+      .run(enabled ? 1 : 0, String(guildId), kind).changes > 0
+  );
+}
+
+/** Turn every configured alert on or off for a guild. Returns how many moved. */
+export function setAllChannelsEnabled(guildId, enabled) {
+  return db
+    .prepare(`UPDATE channels SET enabled = ? WHERE guild_id = ?`)
+    .run(enabled ? 1 : 0, String(guildId)).changes;
 }
 
 export function setChannelMessageId(guildId, kind, messageId) {
@@ -565,6 +604,25 @@ export function addKnownPets(rows) {
     throw err;
   }
 }
+
+/**
+ * Add a column to an existing table if it isn't there yet.
+ *
+ * The CREATE TABLE statements above only run on a fresh database — SQLite
+ * ignores them entirely once the table exists, so this bot's live Railway
+ * volume would never gain a newly added column and every query naming it
+ * would throw. Mirrors the same helper in the clan and league bots.
+ */
+function addColumnIfMissing(table, column, definition) {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all();
+  if (columns.some((c) => c.name === column)) return;
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  console.log(`[db] Migrated: added ${table}.${column}`);
+}
+
+// Existing rows default to enabled, so this migration cannot silently switch
+// off alerts that were working before the upgrade.
+addColumnIfMissing('channels', 'enabled', 'INTEGER NOT NULL DEFAULT 1');
 
 /**
  * Rename the old combined 'newpet' channel to 'newitem'.

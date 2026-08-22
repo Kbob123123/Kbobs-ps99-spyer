@@ -29,7 +29,12 @@ export async function execute(interaction) {
 
   const lines = Object.entries(KIND_LABELS).map(([kind, label]) => {
     const row = configured.get(kind);
-    return row ? `${label} → <#${row.channel_id}>` : `${label} → _not set_`;
+    if (!row) return `${label} → _not set_`;
+    // A paused alert still has a channel, so showing only the channel would
+    // read as working. The pause has to be visible or this screen lies.
+    return row.enabled
+      ? `${label} → <#${row.channel_id}>`
+      : `${label} → <#${row.channel_id}> ⏸️ _paused_`;
   });
 
   const embed = new EmbedBuilder()
@@ -43,7 +48,7 @@ export async function execute(interaction) {
         `${formatNumber(countRows('rap'))} RAP readings\n` +
         '_Readings are stored only when a value changes, so this grows slowly by design._',
     })
-    .setFooter({ text: 'Change with /setratechannel and /setalertchannel' })
+    .setFooter({ text: 'Change with /setratechannel and /setalertchannel · pause with /spyeralerts' })
     .setTimestamp();
 
   await interaction.editReply({ embeds: [embed] });
