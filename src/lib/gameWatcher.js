@@ -181,6 +181,11 @@ function buildRestartEmbed(event, live) {
  *
  * Never throws at the caller: the game watch is a side feature and must not
  * be able to cost a poll that is also doing the bot's main job.
+ *
+ * Returns the events it announced, so the caller can follow an update with a
+ * summary of what the update actually added. Returning them rather than
+ * building that summary here keeps this file about ONE question — did the
+ * game change — instead of also owning the item catalogue.
  */
 export async function runGameWatch(client) {
   let live;
@@ -188,10 +193,10 @@ export async function runGameWatch(client) {
     live = await fetchGameInfo();
   } catch (err) {
     console.warn('[game] Could not read the games API:', err.message);
-    return;
+    return [];
   }
 
-  if (!live) return;
+  if (!live) return [];
 
   const previous = getGameState(live.universeId);
   const events = diffGameState(previous, live);
@@ -204,12 +209,12 @@ export async function runGameWatch(client) {
   if (!previous) {
     setGameState({ ...live, peakPlaying });
     console.log(`[game] Baseline recorded: "${live.name?.trim()}", ${live.playing} playing.`);
-    return;
+    return [];
   }
 
   if (events.length === 0) {
     setGameState({ ...live, peakPlaying });
-    return;
+    return [];
   }
 
   console.log(`[game] ${events.length} event(s): ${events.map((e) => e.type).join(', ')}`);
@@ -236,4 +241,6 @@ export async function runGameWatch(client) {
   // restart on every poll until the game refilled — one event, a dozen alerts.
   const hadRestart = events.some((e) => e.type === 'restart');
   setGameState({ ...live, peakPlaying: hadRestart ? live.playing : peakPlaying });
+
+  return events;
 }

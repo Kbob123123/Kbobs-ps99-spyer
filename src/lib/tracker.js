@@ -17,6 +17,8 @@ import { renderTierRateChart, TIER_COLORS } from './graph.js';
 import { resolveThumbnail } from './thumbnails.js';
 import { runStoreWatch } from './storeWatcher.js';
 import { runGameWatch } from './gameWatcher.js';
+import { recordDiamonds, runEconomyReport } from './economy.js';
+import { detectNewItems, postUpdateSummary } from './items.js';
 import {
   formatNumber,
   formatCompact,
@@ -24,6 +26,7 @@ import {
   formatMultiplier,
   formatPercentChange,
   displayName,
+  capToFieldLimit,
 } from './format.js';
 
 const HOUR = 3600;
@@ -65,7 +68,37 @@ function minBaselineRate(tier) {
 // RAP alerts: percentage movement over 24 hours. 15% is a real move in a day
 // without being noise, and it catches a pet that is *starting* to climb rather
 // than only one that has already doubled.
-const RAP_CHANGE_PCT = 0.15;
+//
+// Configurable because "what counts as a real move" is a judgement about the
+// market, not a fact about the code, and it changes with how volatile trading
+// is that month. Expressed as a PERCENT in the environment (RAP_CHANGE_PCT=15)
+// because that is how anyone setting it thinks about it; a fraction in the env
+// invites someone to write 15 and get a threshold nothing can ever cross.
+const RAP_CHANGE_PCT = readPercentEnv('RAP_CHANGE_PCT', 15);
+
+/**
+ * A crash: RAP falling by at least this much in 24 hours.
+ *
+ * Distinct from the daily digest on purpose. The digest is a dashboard —
+ * "here is how the market moved today" — and a pet losing half its value is
+ * an EVENT, which under this codebase's rules gets its own message at the
+ * moment it happens rather than a line in tomorrow's summary.
+ */
+const RAP_CRASH_PCT = readPercentEnv('RAP_CRASH_PCT', 40);
+
+/**
+ * Read a percentage from the environment, returning a fraction.
+ *
+ * Accepts 40 or 0.4 and means the same thing by both. Someone setting
+ * RAP_CRASH_PCT is thinking in percent, but a fraction is the natural thing
+ * to write if you have read the code — silently treating 40 as "4000%" would
+ * disable the alert entirely and look like a bug in the detector.
+ */
+function readPercentEnv(name, defaultPercent) {
+  const raw = Number(process.env[name]);
+  const percent = Number.isFinite(raw) && raw > 0 ? raw : defaultPercent;
+  return percent > 1 ? percent / 100 : percent;
+}
 
 // Ignore pets below this RAP — percentage noise lives at the cheap end.
 //
@@ -73,7 +106,7 @@ const RAP_CHANGE_PCT = 0.15;
 // and the 25th percentile ~87M, so an earlier 100k floor excluded essentially
 // nothing (96% of pets still qualified). 10M actually trims the bottom of the
 // Huge range while leaving every pet anyone trades seriously.
-const RAP_MIN_VALUE = 10_000_000;
+const RAP_MIN_VALUE = Number(process.env.RAP_MIN_VALUE) > 0 ? Number(process.env.RAP_MIN_VALUE) : 10_000_000;
 
 // ...and ignore moves whose absolute size is trivial, so a large percentage on
 // a cheap pet doesn't crowd out a smaller percentage on something valuable.
@@ -173,12 +206,38 @@ export async function runPoll(client) {
     console.warn('[store] Watch failed:', err.message);
   }
 
+  // Track every item id across all 26 categories, so an update can be
+  // described by what it shipped. Recorded every poll rather than only when
+  // an update fires: items land in the API slightly before or after the
+  // republish, so a diff taken at the exact moment of the event misses them.
+  try {
+    detectNewItems(existsRaw, now);
+  } catch (err) {
+    console.warn('[items] Detection failed:', err.message);
+  }
+
   // Same deal for the game update/restart watch: separate Roblox host, its
   // own try/catch, so an outage there cannot take the poll down either.
   try {
-    await runGameWatch(client);
+    const gameEvents = await runGameWatch(client);
+
+    // An update gets a follow-up listing what actually appeared. Skipped
+    // silently when nothing did — a rebalance patch adds no items, and an
+    // empty "what's new" list reads as the bot being broken.
+    if (gameEvents.some((e) => e.type === 'update')) {
+      await postUpdateSummary(client, getChannelsOfKind('game'));
+    }
   } catch (err) {
     console.warn('[game] Watch failed:', err.message);
+  }
+
+  // Diamond supply rides the exists payload already fetched above, so this
+  // costs no extra request. Recording every poll but reporting once a day.
+  try {
+    recordDiamonds(existsRaw, now);
+    await runEconomyReport(client, { hourUtc: RAP_SUMMARY_HOUR_UTC });
+  } catch (err) {
+    console.warn('[economy] Pass failed:', err.message);
   }
 
   pruneHistory('exists', HISTORY_KEEP_SECONDS);
@@ -206,6 +265,20 @@ export async function runHourlyAlerts(client) {
   const rapEntries = collectTieredPets(rapRaw, tierMap);
 
   await checkExistsRateAlerts(client, existsEntries, now);
+
+  // Each isolated: one alert type failing must not silence the others, and
+  // none of them may take the hourly pass down.
+  try {
+    await checkLeaderboardRewards(client, existsEntries, now);
+  } catch (err) {
+    console.warn('[leaderboard] Check failed:', err.message);
+  }
+
+  try {
+    await checkRapCrashAlerts(client, rapEntries, now);
+  } catch (err) {
+    console.warn('[rap] Crash check failed:', err.message);
+  }
 
   // RAP is a DAILY digest, not an hourly alert. This runs on the hourly tick,
   // so it has to decide for itself whether today's has already gone out.
@@ -667,6 +740,181 @@ function formatRateAlertLine(a) {
  *   - a minimum absolute change, so a large-but-cheap swing doesn't crowd out
  *     a smaller percentage move on something genuinely valuable.
  */
+/**
+ * How many of a tier must hatch in one hour to mean "rewards were handed out".
+ *
+ * Calibrated from the live distributions in the roadmap: the MEDIAN titanic
+ * variant has 39 in existence in TOTAL and the median gargantuan 5, and their
+ * ordinary hourly hatch rates are single digits. So 50 titanics or 10
+ * gargantuans appearing across the game inside an hour is not hatching — it
+ * is a leaderboard payout landing in a batch, which no amount of normal play
+ * produces.
+ */
+const LEADERBOARD_THRESHOLDS = { titanic: 50, gargantuan: 10 };
+
+/**
+ * Detect a leaderboard reward payout: a burst of a tier appearing at once.
+ *
+ * Summed ACROSS the tier rather than per pet. A payout spreads over whatever
+ * pets the rewards happen to be, so no single variant necessarily spikes —
+ * which is exactly why the existing per-pet spike alert cannot see this and
+ * it needs its own detector.
+ */
+export function findLeaderboardBursts(existsEntries, now, thresholds = LEADERBOARD_THRESHOLDS) {
+  const gained = {};
+  const contributors = {};
+
+  for (const entry of existsEntries.values()) {
+    if (!(entry.tier in thresholds)) continue;
+
+    const hourAgo = getValueAt('exists', entry.petKey, now - HOUR);
+    if (hourAgo == null) continue;
+
+    const delta = entry.value - hourAgo;
+    if (delta <= 0) continue;
+
+    gained[entry.tier] = (gained[entry.tier] ?? 0) + delta;
+    (contributors[entry.tier] ??= []).push({ ...entry, gained: delta });
+  }
+
+  const bursts = [];
+  for (const [tier, threshold] of Object.entries(thresholds)) {
+    const total = gained[tier] ?? 0;
+    if (total < threshold) continue;
+    bursts.push({
+      tier,
+      total,
+      threshold,
+      contributors: (contributors[tier] ?? []).sort((a, b) => b.gained - a.gained),
+    });
+  }
+
+  return bursts;
+}
+
+/**
+ * Announce a leaderboard payout.
+ *
+ * Deduplicated per tier per hour: the hourly pass and the sliding window can
+ * both see the same burst twice around the edges, and a payout is one event.
+ */
+async function checkLeaderboardRewards(client, existsEntries, now) {
+  const channels = getChannelsOfKind('exists');
+  if (channels.length === 0) return;
+
+  const bursts = findLeaderboardBursts(existsEntries, now);
+  if (bursts.length === 0) return;
+
+  const hourKey = new Date(now * 1000).toISOString().slice(0, 13);
+
+  for (const burst of bursts) {
+    const marker = `leaderboard_${burst.tier}_last_hour`;
+    if (getMeta(marker) === hourKey) continue;
+
+    const meta = TIER_META[burst.tier] ?? {};
+
+    const embed = new EmbedBuilder()
+      .setTitle('🏆 LEADERBOARD REWARDS')
+      .setColor(meta.color ?? 0xf1c40f)
+      .setDescription(
+        `## ${formatNumber(burst.total)} ${meta.label ?? burst.tier}s appeared in one hour\n` +
+          'A burst this size is a leaderboard payout landing, not normal hatching.'
+      )
+      .addFields({
+        name: '📦 Biggest movers',
+        value: capToFieldLimit(
+          burst.contributors.map(
+            (c) => `**${displayName(c.name, c.variant)}** — +${formatNumber(c.gained)}`
+          )
+        ),
+      })
+      .setFooter({ text: `Fires above ${burst.threshold} ${burst.tier}s in an hour · once per hour` })
+      .setTimestamp();
+
+    await broadcast(client, channels, { embeds: [embed] });
+    setMeta(marker, hourKey);
+  }
+}
+
+/**
+ * Pets whose RAP has collapsed in the last 24 hours.
+ *
+ * Pure so the threshold is testable without a network or a client.
+ */
+export function findRapCrashes(rapEntries, now, { crashPct = RAP_CRASH_PCT } = {}) {
+  const crashes = [];
+
+  for (const entry of rapEntries.values()) {
+    if (!RAP_SUMMARY_TIERS.has(entry.tier)) continue;
+
+    // Measured against the value BEFORE the fall, not the current one: a pet
+    // now worth very little is exactly the case worth reporting, so filtering
+    // on the current value would drop the worst crashes.
+    const before = getValueAt('rap', entry.petKey, now - 24 * HOUR);
+    if (before == null || before < RAP_MIN_VALUE) continue;
+    if (entry.value <= 0) continue;
+
+    const change = entry.value - before;
+    if (change >= 0) continue;
+
+    const pct = change / before;
+    if (Math.abs(pct) < crashPct) continue;
+    if (Math.abs(change) < RAP_MIN_ABSOLUTE) continue;
+
+    crashes.push({ ...entry, before, change, pct });
+  }
+
+  return crashes.sort((a, b) => a.pct - b.pct);
+}
+
+/**
+ * Announce RAP crashes as their own event, one message per pass.
+ *
+ * Deduplicated through bot_meta: the 24-hour window slides slowly, so a pet
+ * that crashed once would otherwise re-qualify on every hourly pass for a
+ * full day and send the same alert 24 times.
+ */
+async function checkRapCrashAlerts(client, rapEntries, now) {
+  const channels = getChannelsOfKind('rap');
+  if (channels.length === 0) return;
+
+  const crashes = findRapCrashes(rapEntries, now);
+  if (crashes.length === 0) return;
+
+  const announced = new Set((getMeta('rap_crashes_announced') ?? '').split('|').filter(Boolean));
+  const fresh = crashes.filter((c) => !announced.has(c.petKey));
+  if (fresh.length === 0) return;
+
+  const embed = new EmbedBuilder()
+    .setTitle('📉 RAP CRASH')
+    .setColor(0xed4245)
+    .setDescription(
+      fresh.length === 1
+        ? 'A Titanic or Gargantuan just lost a large share of its value.'
+        : `${fresh.length} pets just lost a large share of their value.`
+    )
+    .addFields({
+      name: `💥 Down ${Math.round(RAP_CRASH_PCT * 100)}%+ in 24h`,
+      value: capToFieldLimit(
+        fresh.map(
+          (m) =>
+            `**${displayName(m.name, m.variant)}** [${m.tier}] — ` +
+            `${formatCompact(m.before)} → ${formatCompact(m.value)} ` +
+            `(**${formatPercentChange(m.before, m.value)}**)`
+        )
+      ),
+    })
+    .setFooter({ text: `Fires once per pet · threshold ${Math.round(RAP_CRASH_PCT * 100)}% · set RAP_CRASH_PCT to change` })
+    .setTimestamp();
+
+  await broadcast(client, channels, { embeds: [embed] });
+
+  // Keep the marker bounded — the newest 200 keys are far more than a day's
+  // worth of crashes, and an unbounded string in a settings row grows forever.
+  const merged = [...fresh.map((c) => c.petKey), ...announced].slice(0, 200);
+  setMeta('rap_crashes_announced', merged.join('|'));
+}
+
 async function checkRapAlerts(client, rapEntries, now) {
   const channels = getChannelsOfKind('rap');
   if (channels.length === 0) return;
@@ -716,13 +964,13 @@ async function checkRapAlerts(client, rapEntries, now) {
   if (risers.length > 0) {
     embed.addFields({
       name: `📈 Rising (${risers.length})`,
-      value: risers.slice(0, 12).map(line).join('\n').slice(0, 1024),
+      value: capToFieldLimit(risers.map(line)),
     });
   }
   if (fallers.length > 0) {
     embed.addFields({
       name: `📉 Falling (${fallers.length})`,
-      value: fallers.slice(0, 12).map(line).join('\n').slice(0, 1024),
+      value: capToFieldLimit(fallers.map(line)),
     });
   }
 
@@ -766,11 +1014,15 @@ async function broadcast(client, rows, payload) {
  * keeping — this is the opposite case.
  *
  * One embed per pet rather than one combined list, so each hatch carries its
- * own artwork. Two gargantuans hatching inside the same ten-minute window is
- * rare enough that the extra messages are not a flood.
+ * own artwork — but they go out as ONE message carrying up to ten embeds
+ * rather than one message each. A leaderboard payout can land a dozen
+ * gargantuans in a single ten-minute window, and that arrived as a dozen
+ * separate pings; the embeds are identical either way, the notification
+ * count is not.
  */
 export async function postGargantuanHatch(client, channels, hatches) {
   const meta = TIER_META.gargantuan;
+  const embeds = [];
 
   for (const hatch of hatches) {
     const detail = await getPetDetail(hatch.name).catch(() => null);
@@ -811,6 +1063,12 @@ export async function postGargantuanHatch(client, channels, hatches) {
 
     if (art) embed.setImage(art);
 
-    await broadcast(client, channels, { embeds: [embed] });
+    embeds.push(embed);
+  }
+
+  // Discord caps a message at 10 embeds and rejects the WHOLE message if you
+  // exceed it, so chunk rather than trusting the batch to stay small.
+  for (let i = 0; i < embeds.length; i += 10) {
+    await broadcast(client, channels, { embeds: embeds.slice(i, i + 10) });
   }
 }

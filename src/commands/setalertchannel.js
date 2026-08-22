@@ -7,6 +7,7 @@ const ALERT_LABELS = {
   store: 'Shop leak',
   newpet: 'New pet & first hatch',
   game: 'Game update & restart',
+  economy: 'Diamond economy',
 };
 
 /**
@@ -21,10 +22,11 @@ const ALERT_LABELS = {
 const ALERT_DETAILS = {
   exists:
     'Checked once an hour: fires when a Titanic/Gargantuan pet hatches at 2x or more, ' +
-    'or half or less, of its previous hour. Needs ~2 hours of history first.',
+    'or half or less, of its previous hour. Also flags leaderboard payouts — a burst of ' +
+    '50+ titanics or 10+ gargantuans in one hour. Needs ~2 hours of history first.',
   rap:
-    "Checked once an hour: fires when a Titanic/Gargantuan pet's RAP triples or falls " +
-    'to a third within 24 hours.',
+    "A daily digest of Titanic/Gargantuan RAP moves of 15%+ over 24 hours, plus an " +
+    'immediate alert when one crashes 40%+. Both thresholds are configurable.',
   store:
     'Checked every 10 minutes: fires when a gamepass or developer product is added, ' +
     'renamed, or goes on sale in Pet Simulator 99. A placeholder name turning into a ' +
@@ -36,7 +38,10 @@ const ALERT_DETAILS = {
   game:
     'Checked every 10 minutes: fires when Pet Simulator 99 publishes an update (usually ' +
     'with a new event tag in the title), and when the player count collapses the way it ' +
-    'does during a server restart.',
+    'does during a server restart. An update is followed by a list of what it added.',
+  economy:
+    'Posted once a day: the game-wide diamond total and how much it grew since the ' +
+    'previous report. Needs two days of readings before the first one can appear.',
 };
 
 // One command for both alert types, same reasoning as /setratechannel.
@@ -54,7 +59,8 @@ export const data = new SlashCommandBuilder()
         { name: 'RAP swings', value: 'rap' },
         { name: 'Shop leaks (new gamepasses & products)', value: 'store' },
         { name: 'New pets & first hatches', value: 'newpet' },
-        { name: 'Game updates & restarts', value: 'game' }
+        { name: 'Game updates & restarts', value: 'game' },
+        { name: 'Diamond economy (daily)', value: 'economy' }
       )
   )
   .addChannelOption((opt) =>

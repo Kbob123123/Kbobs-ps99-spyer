@@ -117,6 +117,44 @@ CREATE TABLE IF NOT EXISTS known_pets (
 -- visible as a COLLAPSE: comparing against the previous poll alone would miss
 -- a restart that happened between two low readings, and would fire on the
 -- ordinary overnight decline. The peak is what the drop is measured from.
+-- Every item id we have seen in /api/exists, across ALL 26 categories.
+--
+-- Broader than known_pets on purpose: that table drives the new-PET alert and
+-- holds only tiered pets, while an update ships eggs, enchants, potions and
+-- hoverboards too. Kept separate rather than merged because the two answer
+-- different questions and have different baselines — merging them would make
+-- the pet alert fire for a new potion.
+--
+-- first_seen is what the update summary reads: "what appeared in the last few
+-- hours", which is how new content is attributed to the update that shipped it.
+CREATE TABLE IF NOT EXISTS known_items (
+  category   TEXT NOT NULL,
+  item_id    TEXT NOT NULL,
+  first_seen INTEGER NOT NULL,
+  PRIMARY KEY (category, item_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_known_items_seen ON known_items (first_seen DESC);
+
+-- Daily readings of a game-wide currency total, for the inflation tracker.
+--
+-- value is REAL, not INTEGER, on purpose. Diamonds sit around 1.05e15 which
+-- is fine either way, but /api/exists carries currencies as large as 8e46
+-- (Coins) — far past what a 64-bit integer column can hold. REAL costs
+-- nothing here: doubles represent integers exactly below 2^53, so every
+-- figure we actually report is exact, and the absurd ones degrade to
+-- approximate instead of failing to store.
+--
+-- One row per (currency, day): the tracker wants a daily delta, so a reading
+-- per poll would be 144x the rows for no extra resolution.
+CREATE TABLE IF NOT EXISTS currency_history (
+  currency TEXT NOT NULL,
+  day      TEXT NOT NULL,
+  value    REAL NOT NULL,
+  ts       INTEGER NOT NULL,
+  PRIMARY KEY (currency, day)
+);
+
 CREATE TABLE IF NOT EXISTS game_state (
   universe_id  TEXT PRIMARY KEY,
   name         TEXT,
@@ -526,6 +564,69 @@ export function addKnownPets(rows) {
     db.exec('ROLLBACK');
     throw err;
   }
+}
+
+/* ---------------------------------------------------------------------------
+ * Known items across every category (update summary)
+ * ------------------------------------------------------------------------- */
+
+export function isKnownItemsEmpty() {
+  return db.prepare(`SELECT COUNT(*) AS n FROM known_items`).get().n === 0;
+}
+
+export function getKnownItemKeys() {
+  return new Set(
+    db.prepare(`SELECT category, item_id FROM known_items`).all().map((r) => `${r.category}:${r.item_id}`)
+  );
+}
+
+export function addKnownItems(rows, ts = Math.floor(Date.now() / 1000)) {
+  if (rows.length === 0) return;
+
+  const stmt = db.prepare(`
+    INSERT INTO known_items (category, item_id, first_seen) VALUES (?, ?, ?)
+    ON CONFLICT(category, item_id) DO NOTHING
+  `);
+
+  db.exec('BEGIN');
+  try {
+    for (const r of rows) stmt.run(r.category, r.itemId, ts);
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+/** Items first seen at or after `since` — what the update summary reports. */
+export function getItemsSeenSince(since) {
+  return db
+    .prepare(`SELECT * FROM known_items WHERE first_seen >= ? ORDER BY category ASC, item_id ASC`)
+    .all(since);
+}
+
+/* ---------------------------------------------------------------------------
+ * Currency history (inflation tracker)
+ * ------------------------------------------------------------------------- */
+
+/** Record today's reading, overwriting an earlier one for the same day. */
+export function recordCurrencyReading(currency, day, value) {
+  db.prepare(`
+    INSERT INTO currency_history (currency, day, value, ts) VALUES (?, ?, ?, ?)
+    ON CONFLICT(currency, day) DO UPDATE SET value = excluded.value, ts = excluded.ts
+  `).run(currency, day, Number(value), Math.floor(Date.now() / 1000));
+}
+
+/** The most recent days, newest first. */
+export function getCurrencyHistory(currency, limit = 30) {
+  return db
+    .prepare(`SELECT * FROM currency_history WHERE currency = ? ORDER BY day DESC LIMIT ?`)
+    .all(currency, limit);
+}
+
+/** One specific day's reading, or null. */
+export function getCurrencyReading(currency, day) {
+  return db.prepare(`SELECT * FROM currency_history WHERE currency = ? AND day = ?`).get(currency, day) ?? null;
 }
 
 /* ---------------------------------------------------------------------------

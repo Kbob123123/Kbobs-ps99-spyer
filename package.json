@@ -1,6 +1,6 @@
 {
   "name": "ps99-pet-spyer",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "description": "Discord bot that tracks Pet Simulator 99 pet hatch rates, RAP, and exists counts.",
   "type": "module",
   "main": "src/index.js",

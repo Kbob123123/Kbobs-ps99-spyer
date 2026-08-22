@@ -7,9 +7,12 @@ const KIND_LABELS = {
   huge: `${TIER_META.huge.emoji} Huge hatch rates`,
   titanic: `${TIER_META.titanic.emoji} Titanic hatch rates`,
   gargantuan: `${TIER_META.gargantuan.emoji} Gargantuan hatch rates`,
-  exists: '⚡ Hatch rate spike/drop alerts',
-  rap: '💰 RAP swing alerts',
+  exists: '⚡ Hatch rate spikes, drops & leaderboard payouts',
+  rap: '💰 RAP swings & crashes',
   store: '🛒 Shop leaks (new gamepasses & products)',
+  newpet: '✨ New pets & first hatches',
+  game: '🚀 Game updates & restarts',
+  economy: '💎 Diamond economy (daily)',
 };
 
 export const data = new SlashCommandBuilder()

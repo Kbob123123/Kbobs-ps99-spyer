@@ -19,6 +19,18 @@
 
 export const CHANGELOG = [
   {
+    version: '2.3.0',
+    date: '2026-08-23',
+    lines: [
+      '**`/exists` — look up anything, not just pets.** Eggs, potions, enchants, charms, hoverboards and even game-wide currency totals. Pets still get the full card with variants and history charts. `/pet` keeps working exactly as before.',
+      '**Leaderboard payout alerts.** When a burst of Titanics or Gargantuans appears at once — the signature of leaderboard rewards being handed out — the hatch-rate channel now says so instead of it looking like a mystery spike.',
+      '**RAP crash alerts.** A Titanic or Gargantuan losing 40%+ of its value in a day now gets its own immediate alert rather than waiting for the next daily digest.',
+      '**Diamond economy tracker.** `/setalertchannel type:Diamond economy` posts a daily report of how many diamonds exist game-wide and how fast that is growing.',
+      '**Update summaries.** When the game updates, the bot now follows the announcement with a list of the new pets, eggs and enchants that came with it.',
+      'Gargantuan hatches that land together now arrive as one message instead of one ping each.',
+    ],
+  },
+  {
     version: '2.2.0',
     date: '2026-08-22',
     lines: [
