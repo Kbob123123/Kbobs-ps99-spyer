@@ -8,7 +8,8 @@
     "start": "node src/index.js",
     "lint-commands": "node src/lint-commands.mjs src/commands",
     "predeploy-commands": "npm run lint-commands",
-    "deploy-commands": "node src/deploy-commands.js"
+    "deploy-commands": "node src/deploy-commands.js",
+    "clear-guild-commands": "node src/clear-guild-commands.js"
   },
   "dependencies": {
     "chart.js": "^4.4.8",
