@@ -8,7 +8,8 @@ import { formatNumber, formatCompact, capToFieldLimit } from '../lib/format.js';
  *
  * /api/exists covers 26 categories and ~17,500 entries: eggs, potions,
  * enchants, charms, hoverboards, and a Currency category holding game-wide
- * totals. /pet could only ever answer for one of those.
+ * totals. The old /pet could only ever answer for one of those, and this
+ * replaces it.
  */
 
 // Offered in the picker. The full list is 26 long, which is more than a choice
@@ -126,7 +127,7 @@ export async function execute(interaction) {
   }
 
   // A pet gets the full treatment — variants, artwork and history charts —
-  // through exactly the same code path /pet uses.
+  // rendered by lib/petView.js, which is the old /pet view kept intact.
   if (match.category === 'Pet') {
     await interaction.editReply(await buildPetReply(match.id));
     return;

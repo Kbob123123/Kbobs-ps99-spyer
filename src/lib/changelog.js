@@ -19,6 +19,15 @@
 
 export const CHANGELOG = [
   {
+    version: '2.4.0',
+    date: '2026-08-23',
+    lines: [
+      '**`/pet` has been replaced by `/exists`.** Same pet card, same charts, same everything — it just also covers eggs, potions, enchants and the rest now. Type `/exists` instead.',
+      '**Leaderboard payouts now have their own channel** — set it with `/setalertchannel type:Leaderboard reward payouts`.',
+      'Payout detection now watches for **one pet** appearing in bulk (50+ of a single Titanic, 10+ of a single Gargantuan), which is what a reward drop actually looks like. It no longer counts a busy hour spread across lots of different pets as a payout.',
+    ],
+  },
+  {
     version: '2.3.0',
     date: '2026-08-23',
     lines: [

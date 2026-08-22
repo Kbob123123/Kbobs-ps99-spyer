@@ -9,10 +9,10 @@ import { formatNumber, displayName } from './format.js';
 /**
  * The full pet view: variants, artwork, and exists/RAP history charts.
  *
- * Lifted out of commands/pet.js so /exists can show the same thing for a pet
- * instead of carrying a second, thinner rendering of the same data. Two
- * commands rendering one concept differently is how they drift — /pet gaining
- * a field that /exists silently lacks, and nobody noticing which is which.
+ * Lifted out of the old commands/pet.js when /exists replaced it. Kept as its
+ * own module rather than folded into the command because a pet is the one
+ * category that earns a richer rendering than "here is a number", and mixing
+ * that into the general item path would bury it.
  */
 
 // All-time rather than a fixed window. Readings are stored only when a value

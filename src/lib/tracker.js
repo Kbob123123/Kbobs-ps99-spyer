@@ -31,7 +31,7 @@ import {
 
 const HOUR = 3600;
 
-// Two years. /pet now charts all-time, so the retention window IS the chart's
+// Two years. /exists charts all-time, so the retention window IS the chart's
 // horizon. Affordable because storage is change-only: a pet whose exists count
 // moves a few times a day costs a handful of rows a day, not one per poll.
 const HISTORY_KEEP_SECONDS = 730 * 24 * HOUR;
@@ -741,28 +741,30 @@ function formatRateAlertLine(a) {
  *     a smaller percentage move on something genuinely valuable.
  */
 /**
- * How many of a tier must hatch in one hour to mean "rewards were handed out".
+ * How many of ONE pet must appear in an hour to mean "rewards were handed out".
  *
  * Calibrated from the live distributions in the roadmap: the MEDIAN titanic
  * variant has 39 in existence in TOTAL and the median gargantuan 5, and their
- * ordinary hourly hatch rates are single digits. So 50 titanics or 10
- * gargantuans appearing across the game inside an hour is not hatching — it
- * is a leaderboard payout landing in a batch, which no amount of normal play
- * produces.
+ * ordinary hourly hatch rates are single digits. So 50 of a single titanic
+ * appearing inside one hour is not hatching — it is a leaderboard payout of
+ * that specific pet, which no amount of normal play produces.
  */
 const LEADERBOARD_THRESHOLDS = { titanic: 50, gargantuan: 10 };
 
 /**
- * Detect a leaderboard reward payout: a burst of a tier appearing at once.
+ * Detect a leaderboard reward payout: ONE pet appearing in bulk.
  *
- * Summed ACROSS the tier rather than per pet. A payout spreads over whatever
- * pets the rewards happen to be, so no single variant necessarily spikes —
- * which is exactly why the existing per-pet spike alert cannot see this and
- * it needs its own detector.
+ * Counted per PET, not across the tier. A payout hands out a specific pet, so
+ * that pet spikes on its own — whereas a tier-wide sum would fire on 50
+ * titanics spread across cats, dogs and axolotls, which is just a busy hour
+ * and not a payout at all.
+ *
+ * Variants of the same pet ARE summed together: a payout of "Titanic Cat"
+ * split 60 normal and 40 golden is one payout of that pet, and counting the
+ * variants separately would let it slip under the threshold twice over.
  */
 export function findLeaderboardBursts(existsEntries, now, thresholds = LEADERBOARD_THRESHOLDS) {
-  const gained = {};
-  const contributors = {};
+  const byPet = new Map();
 
   for (const entry of existsEntries.values()) {
     if (!(entry.tier in thresholds)) continue;
@@ -773,23 +775,22 @@ export function findLeaderboardBursts(existsEntries, now, thresholds = LEADERBOA
     const delta = entry.value - hourAgo;
     if (delta <= 0) continue;
 
-    gained[entry.tier] = (gained[entry.tier] ?? 0) + delta;
-    (contributors[entry.tier] ??= []).push({ ...entry, gained: delta });
+    const key = `${entry.tier}:${entry.name}`;
+    const record = byPet.get(key) ?? { tier: entry.tier, name: entry.name, gained: 0, variants: [] };
+    record.gained += delta;
+    record.variants.push({ variant: entry.variant, gained: delta });
+    byPet.set(key, record);
   }
 
   const bursts = [];
-  for (const [tier, threshold] of Object.entries(thresholds)) {
-    const total = gained[tier] ?? 0;
-    if (total < threshold) continue;
-    bursts.push({
-      tier,
-      total,
-      threshold,
-      contributors: (contributors[tier] ?? []).sort((a, b) => b.gained - a.gained),
-    });
+  for (const record of byPet.values()) {
+    const threshold = thresholds[record.tier];
+    if (record.gained < threshold) continue;
+    record.variants.sort((a, b) => b.gained - a.gained);
+    bursts.push({ ...record, threshold });
   }
 
-  return bursts;
+  return bursts.sort((a, b) => b.gained - a.gained);
 }
 
 /**
@@ -799,40 +800,62 @@ export function findLeaderboardBursts(existsEntries, now, thresholds = LEADERBOA
  * both see the same burst twice around the edges, and a payout is one event.
  */
 async function checkLeaderboardRewards(client, existsEntries, now) {
-  const channels = getChannelsOfKind('exists');
+  // Its own channel, not the hatch-rate one. A payout is a different kind of
+  // event from "this pet is hatching faster than usual" — people want it
+  // somewhere they will actually see it, rather than mixed into a rate feed.
+  const channels = getChannelsOfKind('leaderboard');
   if (channels.length === 0) return;
 
   const bursts = findLeaderboardBursts(existsEntries, now);
   if (bursts.length === 0) return;
 
   const hourKey = new Date(now * 1000).toISOString().slice(0, 13);
+  const embeds = [];
 
   for (const burst of bursts) {
-    const marker = `leaderboard_${burst.tier}_last_hour`;
+    // Deduplicated per PET per hour. Keying on the tier instead would mean a
+    // payout of two different titanics in the same hour announced only one.
+    const marker = `leaderboard_${burst.tier}_${burst.name}_last_hour`;
     if (getMeta(marker) === hourKey) continue;
 
     const meta = TIER_META[burst.tier] ?? {};
+    const detail = await getPetDetail(burst.name).catch(() => null);
+    const art = await resolveThumbnail(detail?.thumbnail).catch(() => null);
 
     const embed = new EmbedBuilder()
       .setTitle('🏆 LEADERBOARD REWARDS')
       .setColor(meta.color ?? 0xf1c40f)
       .setDescription(
-        `## ${formatNumber(burst.total)} ${meta.label ?? burst.tier}s appeared in one hour\n` +
-          'A burst this size is a leaderboard payout landing, not normal hatching.'
+        `## ${formatNumber(burst.gained)}x ${burst.name}\n` +
+          `${meta.emoji ?? ''} **${meta.label ?? burst.tier}** — appeared in a single hour. ` +
+          'A burst of one pet this size is a leaderboard payout, not normal hatching.'
       )
-      .addFields({
-        name: '📦 Biggest movers',
-        value: capToFieldLimit(
-          burst.contributors.map(
-            (c) => `**${displayName(c.name, c.variant)}** — +${formatNumber(c.gained)}`
-          )
-        ),
+      .setFooter({
+        text: `Fires above ${burst.threshold} of one ${burst.tier} in an hour · once per pet per hour`,
       })
-      .setFooter({ text: `Fires above ${burst.threshold} ${burst.tier}s in an hour · once per hour` })
       .setTimestamp();
 
-    await broadcast(client, channels, { embeds: [embed] });
+    // The variant split, when it is actually split. A single-variant payout
+    // would just repeat the headline number as a field.
+    if (burst.variants.length > 1) {
+      embed.addFields({
+        name: '✨ By variant',
+        value: capToFieldLimit(
+          burst.variants.map((v) => `**${v.variant}** — +${formatNumber(v.gained)}`)
+        ),
+      });
+    }
+
+    if (art) embed.setImage(art);
+
+    embeds.push(embed);
     setMeta(marker, hourKey);
+  }
+
+  // One message per pass, up to Discord's ten-embed cap — a payout can cover
+  // several pets at once and that should not be several pings.
+  for (let i = 0; i < embeds.length; i += 10) {
+    await broadcast(client, channels, { embeds: embeds.slice(i, i + 10) });
   }
 }
 

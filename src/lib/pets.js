@@ -128,7 +128,7 @@ export function detectNewPets(tierMap) {
   return added;
 }
 
-/** Every known pet name (including untiered), for /pet and /rap name resolution. */
+/** Every known pet name (including untiered), for /exists and /rap name resolution. */
 export async function getAllPetNames() {
   const pets = await getPetsCollection();
   const names = [];

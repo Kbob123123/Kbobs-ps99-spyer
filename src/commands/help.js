@@ -10,7 +10,7 @@ const TYPE_SUBCOMMAND_GROUP = 2;
 // shows up, under "Other" — so adding a command file and forgetting to touch
 // this map degrades to a slightly untidy /help rather than a missing entry.
 const CATEGORIES = [
-  { name: '🔎 Look things up', commands: ['exists', 'pet', 'rap'] },
+  { name: '🔎 Look things up', commands: ['exists', 'rap'] },
   {
     name: '💰 Cheapest by RAP',
     commands: ['cheaphuges', 'cheaptitanics', 'cheapgargs'],

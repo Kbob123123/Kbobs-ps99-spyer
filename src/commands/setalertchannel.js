@@ -8,6 +8,7 @@ const ALERT_LABELS = {
   newpet: 'New pet & first hatch',
   game: 'Game update & restart',
   economy: 'Diamond economy',
+  leaderboard: 'Leaderboard reward payout',
 };
 
 /**
@@ -22,8 +23,11 @@ const ALERT_LABELS = {
 const ALERT_DETAILS = {
   exists:
     'Checked once an hour: fires when a Titanic/Gargantuan pet hatches at 2x or more, ' +
-    'or half or less, of its previous hour. Also flags leaderboard payouts — a burst of ' +
-    '50+ titanics or 10+ gargantuans in one hour. Needs ~2 hours of history first.',
+    'or half or less, of its previous hour. Needs ~2 hours of history first.',
+  leaderboard:
+    'Checked once an hour: fires when a single Titanic appears 50+ times, or a single ' +
+    'Gargantuan 10+ times, within one hour — the signature of a leaderboard payout of ' +
+    'that specific pet.',
   rap:
     "A daily digest of Titanic/Gargantuan RAP moves of 15%+ over 24 hours, plus an " +
     'immediate alert when one crashes 40%+. Both thresholds are configurable.',
@@ -60,7 +64,8 @@ export const data = new SlashCommandBuilder()
         { name: 'Shop leaks (new gamepasses & products)', value: 'store' },
         { name: 'New pets & first hatches', value: 'newpet' },
         { name: 'Game updates & restarts', value: 'game' },
-        { name: 'Diamond economy (daily)', value: 'economy' }
+        { name: 'Diamond economy (daily)', value: 'economy' },
+        { name: 'Leaderboard reward payouts', value: 'leaderboard' }
       )
   )
   .addChannelOption((opt) =>
