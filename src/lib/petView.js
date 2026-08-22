@@ -1,0 +1,130 @@
+import { EmbedBuilder, AttachmentBuilder } from 'discord.js';
+import { getAllRap, getAllExists, describeVariant, variantKey } from './ps99Api.js';
+import { getPetDetail, TIER_META } from './pets.js';
+import { getSeries } from './db.js';
+import { renderHistoryChart, TIER_COLORS } from './graph.js';
+import { resolveThumbnail } from './thumbnails.js';
+import { formatNumber, displayName } from './format.js';
+
+/**
+ * The full pet view: variants, artwork, and exists/RAP history charts.
+ *
+ * Lifted out of commands/pet.js so /exists can show the same thing for a pet
+ * instead of carrying a second, thinner rendering of the same data. Two
+ * commands rendering one concept differently is how they drift — /pet gaining
+ * a field that /exists silently lacks, and nobody noticing which is which.
+ */
+
+// All-time rather than a fixed window. Readings are stored only when a value
+// CHANGES, so a pet's whole history is a few hundred rows at most and charting
+// the lot costs nothing — while a 7-day window hid exactly the long-run trend
+// the chart exists to show.
+const CHART_WINDOW_SECONDS = 100 * 365 * 24 * 3600;
+
+/**
+ * Build the reply payload for one pet, by its exact name.
+ *
+ * @returns {Promise<{embeds: EmbedBuilder[], files: AttachmentBuilder[]}>}
+ */
+export async function buildPetReply(resolved) {
+  const [detail, rap, exists] = await Promise.all([getPetDetail(resolved), getAllRap(), getAllExists()]);
+
+  // Gather every variant of this pet (Normal / Golden / Rainbow / Shiny).
+  const variants = new Map();
+  const addTo = (entry, field) => {
+    if (entry.configData?.id !== resolved) return;
+    const key = variantKey(entry);
+    if (!variants.has(key)) {
+      variants.set(key, { key, variant: describeVariant(entry.configData ?? {}), exists: null, rap: null });
+    }
+    const v = variants.get(key);
+    v[field] = (v[field] ?? 0) + (Number(entry.value) || 0);
+  };
+  for (const e of exists) addTo(e, 'exists');
+  for (const e of rap) addTo(e, 'rap');
+
+  const tierMeta = detail?.tier ? TIER_META[detail.tier] : null;
+
+  const embed = new EmbedBuilder()
+    .setTitle(`${tierMeta ? tierMeta.emoji + ' ' : ''}${resolved}`)
+    .setColor(detail?.tier ? parseInt(TIER_COLORS[detail.tier].slice(1), 16) : 0x3987e5)
+    .setTimestamp();
+
+  const headerLines = [];
+  if (tierMeta) headerLines.push(`**Tier:** ${tierMeta.label}`);
+  if (detail?.rarity != null) headerLines.push(`**Rarity:** ${detail.rarity}`);
+  if (detail?.obtainable === false) headerLines.push('**Obtainable:** No (unobtainable)');
+  if (detail?.description) headerLines.push(`_${detail.description}_`);
+  if (headerLines.length > 0) embed.setDescription(headerLines.join('\n'));
+
+  const ordered = [...variants.values()].sort((a, b) => (b.exists ?? 0) - (a.exists ?? 0));
+  if (ordered.length > 0) {
+    embed.addFields({
+      name: '✨ Variants',
+      value: ordered
+        .map((v) => {
+          const bits = [`**${v.variant}**`];
+          bits.push(v.exists != null ? `${formatNumber(v.exists)} exist` : 'exists N/A');
+          bits.push(v.rap != null ? `💎 ${formatNumber(v.rap)}` : 'RAP N/A');
+          return bits.join(' · ');
+        })
+        .join('\n'),
+      inline: false,
+    });
+  }
+
+  // Thumbnail: prefer the golden art when the top variant is a golden one.
+  const thumbUrl = await resolveThumbnail(
+    ordered[0]?.variant?.includes('Golden') ? detail?.goldenThumbnail : detail?.thumbnail
+  );
+  if (thumbUrl) embed.setThumbnail(thumbUrl);
+
+  // Charts track the Normal variant — it's the one people mean by default, and
+  // plotting every variant on one pair of axes would mix wildly different scales.
+  const normal = ordered.find((v) => v.variant === 'Normal') ?? ordered[0];
+  const files = [];
+
+  if (normal) {
+    const label = displayName(resolved, normal.variant);
+    const existsSeries = getSeries('exists', normal.key, CHART_WINDOW_SECONDS);
+    const rapSeries = getSeries('rap', normal.key, CHART_WINDOW_SECONDS);
+
+    // The same art the embed thumbnail uses, watermarked behind both plots.
+    const chartArt = normal.variant?.includes('Golden')
+      ? detail?.goldenThumbnail ?? detail?.thumbnail
+      : detail?.thumbnail;
+
+    const [existsChart, rapChart] = await Promise.all([
+      renderHistoryChart(label, 'exists', existsSeries, { art: chartArt }).catch(() => null),
+      renderHistoryChart(label, 'rap', rapSeries, { art: chartArt }).catch(() => null),
+    ]);
+
+    if (existsChart) {
+      files.push(new AttachmentBuilder(existsChart, { name: 'exists.png' }));
+      embed.setImage('attachment://exists.png');
+    }
+    if (rapChart) {
+      files.push(new AttachmentBuilder(rapChart, { name: 'rap.png' }));
+    }
+
+    if (!existsChart && !rapChart) {
+      embed.setFooter({
+        text: 'Not enough history for charts yet — they fill in as the tracker records readings.',
+      });
+    }
+  }
+
+  // Exists and RAP go in two embeds rather than one, because they are different
+  // measures on different scales and must never share a pair of axes.
+  const embeds = [embed];
+  if (files.length > 1) {
+    embeds.push(
+      new EmbedBuilder()
+        .setColor(0x199e70)
+        .setImage('attachment://rap.png')
+        .setFooter({ text: 'RAP history' })
+    );
+  }
+
+  return { embeds, files };
+}

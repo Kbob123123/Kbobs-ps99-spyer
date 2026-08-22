@@ -10,7 +10,7 @@ const TYPE_SUBCOMMAND_GROUP = 2;
 // shows up, under "Other" — so adding a command file and forgetting to touch
 // this map degrades to a slightly untidy /help rather than a missing entry.
 const CATEGORIES = [
-  { name: '🔎 Look things up', commands: ['pet', 'rap'] },
+  { name: '🔎 Look things up', commands: ['exists', 'pet', 'rap'] },
   {
     name: '💰 Cheapest by RAP',
     commands: ['cheaphuges', 'cheaptitanics', 'cheapgargs'],
@@ -22,8 +22,8 @@ const CATEGORIES = [
 ];
 
 const BLURB =
-  'Watches PS99 hatch rates and RAP — pet and item lookups with history charts, ' +
-  'plus alerts when a value moves sharply.';
+  'Watches PS99 hatch rates and RAP — lookups for pets, eggs, potions and more ' +
+  'with history charts, plus alerts for new pets, game updates and price swings.';
 
 export const data = new SlashCommandBuilder()
   .setName('help')
