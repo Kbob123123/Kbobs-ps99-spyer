@@ -19,6 +19,13 @@
 
 export const CHANGELOG = [
   {
+    version: '2.7.1',
+    date: '2026-08-23',
+    lines: [
+      '**Fixed RAP crash alerts repeating the same pets every hour.** A pet that stayed down kept being re-announced. You now get one alert when a pet crashes, silence for as long as it stays down, and a fresh alert only if it recovers and falls again.',
+    ],
+  },
+  {
     version: '2.7.0',
     date: '2026-08-23',
     lines: [

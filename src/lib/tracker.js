@@ -954,8 +954,31 @@ async function checkRapCrashAlerts(client, rapEntries, now) {
   const crashes = findRapCrashes(rapEntries, now);
   if (crashes.length === 0) return;
 
-  const announced = new Set((getMeta('rap_crashes_announced') ?? '').split('|').filter(Boolean));
-  const fresh = crashes.filter((c) => !announced.has(c.petKey));
+  /**
+   * Alert on ENTERING the crashed state, not while sitting in it.
+   *
+   * The old marker was a merged history capped at 200 keys. A pet that stays
+   * down keeps qualifying every hour, so it was re-added each pass, pushed
+   * past the cap by newer entries, evicted — and then announced again as
+   * though it had just crashed. With more than a couple of hundred pets down
+   * at once that cycle repeated hourly, which is why the same crash kept
+   * arriving.
+   *
+   * Storing the set of pets CURRENTLY crashed fixes it at the root: a pet is
+   * announced the pass it appears, stays silent for as long as it remains
+   * down however long that is, and becomes eligible again only after it
+   * recovers and falls a second time. No cap is needed because the set is
+   * bounded by how many pets are actually crashed.
+   */
+  const previouslyCrashed = new Set((getMeta('rap_crashed_now') ?? '').split('|').filter(Boolean));
+  const currentlyCrashed = crashes.map((c) => c.petKey);
+
+  const fresh = crashes.filter((c) => !previouslyCrashed.has(c.petKey));
+
+  // Written even when nothing is new, so a pet that recovered drops out of
+  // the set and can alert again if it crashes later.
+  setMeta('rap_crashed_now', currentlyCrashed.join('|'));
+
   if (fresh.length === 0) return;
 
   const embed = new EmbedBuilder()
@@ -982,10 +1005,8 @@ async function checkRapCrashAlerts(client, rapEntries, now) {
 
   await broadcast(client, channels, { embeds: [embed] });
 
-  // Keep the marker bounded — the newest 200 keys are far more than a day's
-  // worth of crashes, and an unbounded string in a settings row grows forever.
-  const merged = [...fresh.map((c) => c.petKey), ...announced].slice(0, 200);
-  setMeta('rap_crashes_announced', merged.join('|'));
+  // The state was already written above, before the early return, so that a
+  // recovery is recorded even on a pass that announces nothing.
 }
 
 async function checkRapAlerts(client, rapEntries, now) {
