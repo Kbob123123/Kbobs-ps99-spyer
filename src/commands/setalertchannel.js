@@ -6,7 +6,7 @@ const ALERT_LABELS = {
   rap: 'RAP swing',
   store: 'Shop leak',
   newitem: 'New item',
-  firsthatch: 'World-first hatch',
+  firsthatch: 'Rare hatch',
   game: 'Game update & restart',
   economy: 'Diamond economy',
   leaderboard: 'Leaderboard reward payout',
@@ -41,9 +41,9 @@ const ALERT_DETAILS = {
     'potion, charm, hoverboard or booth appears in the game data. Nothing from before ' +
     'you switched it on is posted.',
   firsthatch:
-    'Checked every 10 minutes: fires the first time anyone in the game hatches a given ' +
-    'Titanic or Gargantuan — the moment it goes from zero in existence to one. Posts ' +
-    'the artwork with it.',
+    'Checked every 10 minutes. Fires on a world first (0 in existence to 1), on every ' +
+    'hatch of a Titanic or Gargantuan with under 50 in existence, and on every Rainbow ' +
+    'Shiny Huge. Counted per variant, so a Golden is its own pet. Posts the artwork.',
   game:
     'Checked every 10 minutes: fires when Pet Simulator 99 publishes an update (usually ' +
     'with a new event tag in the title), and when the player count collapses the way it ' +
@@ -68,7 +68,7 @@ export const data = new SlashCommandBuilder()
         { name: 'RAP swings', value: 'rap' },
         { name: 'Shop leaks (new gamepasses & products)', value: 'store' },
         { name: 'New items (pets, eggs, enchants…)', value: 'newitem' },
-        { name: 'World-first hatches', value: 'firsthatch' },
+        { name: 'Rare hatches (world firsts, scarce, rainbow)', value: 'firsthatch' },
         { name: 'Game updates & restarts', value: 'game' },
         { name: 'Diamond economy (daily)', value: 'economy' },
         { name: 'Leaderboard reward payouts', value: 'leaderboard' }

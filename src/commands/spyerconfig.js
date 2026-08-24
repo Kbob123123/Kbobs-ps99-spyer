@@ -11,7 +11,7 @@ const KIND_LABELS = {
   rap: '💰 RAP swings & crashes',
   store: '🛒 Shop leaks (new gamepasses & products)',
   newitem: '✨ New items (pets, eggs, enchants…)',
-  firsthatch: '🥇 World-first hatches',
+  firsthatch: '💎 Rare hatches',
   game: '🚀 Game updates & restarts',
   economy: '💎 Diamond economy (daily)',
   leaderboard: '🏆 Leaderboard reward payouts',

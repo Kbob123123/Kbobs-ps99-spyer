@@ -162,7 +162,7 @@ export async function runPoll(client) {
 
   // Same ordering requirement, same reason: this reads the PREVIOUS stored
   // value, which recordReadings below is about to replace.
-  const firstHatches = findFirstHatches(existsEntries);
+  const firstHatches = findRareHatches(existsEntries);
 
   const existsWritten = recordReadings(
     'exists',
@@ -400,7 +400,38 @@ export function findNewGargantuanHatches(existsEntries) {
  * treating it as one would make every fresh database announce thousands of
  * "first hatches" on its opening poll.
  */
-export function findFirstHatches(existsEntries) {
+/**
+ * Below this many in existence, a Titanic or Gargantuan hatch is news on its
+ * own — not just the very first one.
+ *
+ * Measured against the live distributions in the roadmap: the MEDIAN titanic
+ * variant has 39 in existence and the median gargantuan 5. So "under 50" is
+ * not a narrow edge of the market, it is most of it — which is the point.
+ * Waiting for a 0 -> 1 meant one alert per pet ever and then silence forever,
+ * while the 12th of something with eleven in the world went unmentioned.
+ */
+const RARE_EXISTS_THRESHOLD = 50;
+
+/** Huge variants rare enough to be worth announcing every single hatch. */
+const RARE_HUGE_VARIANTS = new Set(['Rainbow Shiny']);
+
+/**
+ * Hatches worth announcing.
+ *
+ * Three separate reasons, all per VARIANT — a Golden Titanic Cat and a normal
+ * one are different things to own, and the exists data keys them separately,
+ * so collapsing them would hide most of what makes a pull rare.
+ *
+ *   world-first  any variant going 0 -> 1. Nobody had one until now.
+ *   scarce       a Titanic or Gargantuan under 50 in existence. Every hatch
+ *                of something that rare moves the market.
+ *   rainbow      a Rainbow Shiny Huge, at any count. The rarest huge variant.
+ *
+ * A missing previous reading is never a hatch — that is us seeing the pet for
+ * the first time, which says nothing about the game, and treating it as one
+ * would make a fresh database announce thousands on its opening poll.
+ */
+export function findRareHatches(existsEntries, { threshold = RARE_EXISTS_THRESHOLD } = {}) {
   const hatched = [];
 
   for (const entry of existsEntries.values()) {
@@ -408,12 +439,29 @@ export function findFirstHatches(existsEntries) {
     const previous = getLatestValue('exists', entry.petKey);
     if (previous == null) continue;
 
-    if (Number(previous.value) === 0 && entry.value > 0) {
-      hatched.push({ ...entry, gained: entry.value });
+    const before = Number(previous.value);
+    const gained = entry.value - before;
+    if (gained <= 0) continue;
+
+    let reason = null;
+    if (before === 0) {
+      reason = 'world-first';
+    } else if (ALERT_TIERS.has(entry.tier) && entry.value < threshold) {
+      reason = 'scarce';
+    } else if (entry.tier === 'huge' && RARE_HUGE_VARIANTS.has(entry.variant)) {
+      reason = 'rainbow';
     }
+
+    if (reason) hatched.push({ ...entry, gained, previous: before, reason });
   }
 
-  return hatched;
+  // Rarest first: fewest in existence leads.
+  return hatched.sort((a, b) => a.value - b.value);
+}
+
+/** Kept as the old name so nothing that only wants 0 -> 1 has to change. */
+export function findFirstHatches(existsEntries) {
+  return findRareHatches(existsEntries).filter((h) => h.reason === 'world-first');
 }
 
 // New pets are announced by the new-item scanner (lib/items.js) along with
@@ -432,8 +480,28 @@ const FIRSTHATCH_KIND = 'firsthatch';
  * Titanic and Gargantuan only. A Huge going 0 -> 1 happens constantly and
  * would drown the channel that exists to catch the rare ones.
  */
+const HATCH_REASON = {
+  'world-first': {
+    title: '🥇 WORLD FIRST HATCH',
+    lead: '**Nobody in the game had one of these until now.**',
+    color: 0xfee75c,
+  },
+  scarce: {
+    title: '💎 RARE HATCH',
+    lead: null, // filled in per pet — the count is the story
+    color: 0xeb459e,
+  },
+  rainbow: {
+    title: '🌈 RAINBOW SHINY HATCH',
+    lead: '**The rarest Huge variant there is.**',
+    color: 0x9b59b6,
+  },
+};
+
 export async function postFirstHatchAlerts(client, hatches) {
-  const rare = hatches.filter((h) => ALERT_TIERS.has(h.tier));
+  // Huges only qualify as a Rainbow Shiny; the tier filter that used to sit
+  // here would have thrown those away before they were ever considered.
+  const rare = hatches;
   if (rare.length === 0) return;
 
   const channels = getChannelsOfKind(FIRSTHATCH_KIND);
@@ -452,21 +520,42 @@ export async function postFirstHatchAlerts(client, hatches) {
       wantGolden ? detail?.goldenThumbnail ?? detail?.thumbnail : detail?.thumbnail
     ).catch(() => null);
 
+    const reason = HATCH_REASON[hatch.reason] ?? HATCH_REASON['world-first'];
+
     const story = [
       `# ${hatch.name}`,
       `${meta.emoji ?? ''} **${meta.label ?? hatch.tier}** · \`${hatch.variant}\``,
       '',
-      '**Nobody in the game had one of these until now.**',
+      // A scarce hatch has no fixed line: the count IS the story, and it
+      // changes every time. The other two reasons are always the same claim.
+      reason.lead ??
+        `**Only ${formatNumber(hatch.value)} in the entire game** — ` +
+          `${hatch.gained > 1 ? `${formatNumber(hatch.gained)} just hatched` : 'one just hatched'}.`,
     ];
     if (detail?.rarity != null) story.push(`💠 Rarity: **${detail.rarity}**`);
     if (detail?.description) story.push(`\n_${detail.description}_`);
 
     const embed = new EmbedBuilder()
-      .setTitle('🥇 WORLD FIRST HATCH')
-      .setColor(meta.color ?? 0xfee75c)
+      .setTitle(reason.title)
+      .setColor(reason.color ?? meta.color ?? 0xfee75c)
       .setDescription(story.join('\n'))
-      .setFooter({ text: 'Fires once — on the very first one to exist.' })
       .setTimestamp();
+
+    // How many exist is the whole measure of rarity, so it is a field on
+    // every one of these rather than buried in prose.
+    embed.addFields(
+      { name: '🌍 In existence', value: `**${formatNumber(hatch.value)}**`, inline: true },
+      { name: '✨ Just hatched', value: `+${formatNumber(hatch.gained)}`, inline: true }
+    );
+
+    embed.setFooter({
+      text:
+        hatch.reason === 'world-first'
+          ? 'Fires once — on the very first one to exist.'
+          : hatch.reason === 'rainbow'
+            ? 'Every Rainbow Shiny Huge hatch is announced.'
+            : `Every hatch of a Titanic or Gargantuan under ${RARE_EXISTS_THRESHOLD} in existence.`,
+    });
 
     if (art) embed.setImage(art);
 

@@ -19,6 +19,15 @@
 
 export const CHANGELOG = [
   {
+    version: '2.7.0',
+    date: '2026-08-23',
+    lines: [
+      '**Rare hatch alerts now cover far more than world firsts.** They fire on any hatch of a Titanic or Gargantuan with **under 50 in existence**, and on every **Rainbow Shiny Huge** — not just the very first one of a pet ever.',
+      '**Variants count separately.** A Golden Titanic Cat is its own pet, so pulling a rare variant is announced even when the normal version is common.',
+      'Each alert shows how many exist and how many just hatched, so you can see how rare it actually is.',
+    ],
+  },
+  {
     version: '2.6.0',
     date: '2026-08-23',
     lines: [
