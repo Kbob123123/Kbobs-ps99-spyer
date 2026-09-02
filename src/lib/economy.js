@@ -75,26 +75,44 @@ export function recordDiamonds(existsRaw, ts = Math.floor(Date.now() / 1000)) {
  * two-day delta labelled with its real span is honest where a missing
  * comparison or a silent gap is not.
  */
-export function buildInflationReport(history) {
-  if (history.length < 2) return null;
+/**
+ * Never compares against TODAY's row.
+ *
+ * recordDiamonds() overwrites today's row on every 10-minute poll, so at any
+ * point before the day ends it holds a partial reading, not a day's total.
+ * The bug this fixes: with the report gated on an hour shared with the RAP
+ * digest (which legitimately fires right at midnight UTC), "today" meant
+ * "the single poll taken ~8 minutes ago." The report then diffed that
+ * against yesterday's FINAL row — a real-world gap of ~15 minutes, not 24
+ * hours, labelled "since yesterday" every single day. The number shown was
+ * essentially noise.
+ *
+ * The fix is to always compare the two most recent FULLY ELAPSED days,
+ * whatever hour this happens to run at. `excludeDay` (today's key) is
+ * stripped before picking the pair, so the comparison window is always a
+ * genuine day-to-day delta and the exact firing hour stops mattering.
+ */
+export function buildInflationReport(history, { excludeDay } = {}) {
+  const usable = excludeDay ? history.filter((h) => h.day !== excludeDay) : history;
+  if (usable.length < 2) return null;
 
-  const [today, previous] = history;
-  const change = Number(today.value) - Number(previous.value);
+  const [latest, previous] = usable;
+  const change = Number(latest.value) - Number(previous.value);
   const pct = Number(previous.value) > 0 ? change / Number(previous.value) : 0;
 
   const days = Math.max(
     1,
-    Math.round((Date.parse(today.day) - Date.parse(previous.day)) / 86_400_000)
+    Math.round((Date.parse(latest.day) - Date.parse(previous.day)) / 86_400_000)
   );
 
   return {
-    current: Number(today.value),
+    current: Number(latest.value),
     previous: Number(previous.value),
     change,
     pct,
     days,
     from: previous.day,
-    to: today.day,
+    to: latest.day,
   };
 }
 
@@ -133,18 +151,29 @@ function buildEmbed(report) {
  * and an in-memory flag would let an afternoon of deploys post the same
  * report repeatedly.
  */
-export async function runEconomyReport(client, { hourUtc = 0 } = {}) {
+/**
+ * No hour gate, deliberately.
+ *
+ * A previous version accepted an `hourUtc` and skipped running until past it
+ * — inherited from the RAP digest's own gate, and passed the SAME env var
+ * (RAP_SUMMARY_HOUR_UTC) at the call site. RAP's data is fine to read the
+ * instant the day rolls over, because it's alerts already accumulated
+ * throughout the previous day. Diamonds are not: buildInflationReport() now
+ * excludes today's still-filling row itself, so there is nothing left for an
+ * hour gate to protect against. Removing it also removes the coupling to a
+ * constant named for an unrelated feature, which is what caused this bug.
+ */
+export async function runEconomyReport(client) {
   const now = Math.floor(Date.now() / 1000);
   const today = utcDay(now);
 
-  if (new Date(now * 1000).getUTCHours() < hourUtc) return;
   if (getMeta('economy_report_last_day') === today) return;
 
   const channels = getChannelsOfKind(CHANNEL_KIND);
   if (channels.length === 0) return;
 
-  const report = buildInflationReport(getCurrencyHistory(DIAMONDS_ID, 30));
-  if (!report) return; // needs two days before it can say anything
+  const report = buildInflationReport(getCurrencyHistory(DIAMONDS_ID, 30), { excludeDay: today });
+  if (!report) return; // needs two FULLY ELAPSED days before it can say anything
 
   const embed = buildEmbed(report);
 

@@ -223,7 +223,11 @@ export async function runPoll(client) {
   // costs no extra request. Recording every poll but reporting once a day.
   try {
     recordDiamonds(existsRaw, now);
-    await runEconomyReport(client, { hourUtc: RAP_SUMMARY_HOUR_UTC });
+    // No hour argument — runEconomyReport no longer needs one. It used to
+    // share RAP_SUMMARY_HOUR_UTC, which was the bug: that gate decided when
+    // TODAY's still-filling reading was "ready," but the fix is that the
+    // report now never uses today's reading at all. See economy.js.
+    await runEconomyReport(client);
   } catch (err) {
     console.warn('[economy] Pass failed:', err.message);
   }
