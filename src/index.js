@@ -27,6 +27,10 @@ import {
   COMPONENT_PREFIX as OWNERMENU_PREFIX,
   handleComponent as handleOwnerMenuComponent,
 } from './commands/ownermenu.js';
+import {
+  COMPONENT_PREFIX as ACKNOWLEDGE_PREFIX,
+  handleComponent as handleAcknowledgeComponent,
+} from './commands/acknowledge.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -105,6 +109,15 @@ client.on('interactionCreate', async (interaction) => {
   // check a select submission matches neither isButton() nor isModalSubmit()
   // and falls through unhandled — Discord shows "This interaction failed".
   if (interaction.isButton() || interaction.isModalSubmit() || interaction.isStringSelectMenu()) {
+    if (interaction.customId?.startsWith(ACKNOWLEDGE_PREFIX)) {
+      try {
+        await handleAcknowledgeComponent(interaction);
+      } catch (err) {
+        console.error('[acknowledge] Button failed:', err);
+      }
+      return;
+    }
+
     if (interaction.customId?.startsWith(JOIN_REQUEST_PREFIX)) {
       try {
         await handleJoinRequestButton(interaction);

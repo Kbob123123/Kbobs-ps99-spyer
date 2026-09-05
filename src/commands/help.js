@@ -18,7 +18,7 @@ const CATEGORIES = [
   { name: '🔔 Alerts & channels', commands: ['setratechannel', 'setalertchannel'] },
   { name: '🔧 Setup', commands: ['spyerconfig', 'spyeralerts', 'botupdchannel'] },
   { name: 'ℹ️ Meta', commands: ['help'] },
-  { name: '🔐 Owner only', commands: ['ownermenu'] },
+  { name: '🔐 Owner only', commands: ['ownermenu', 'acknowledge', 'showcase'] },
 ];
 
 const BLURB =
