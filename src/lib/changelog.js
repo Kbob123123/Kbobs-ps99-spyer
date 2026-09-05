@@ -19,6 +19,15 @@
 
 export const CHANGELOG = [
   {
+    version: '2.8.0',
+    date: '2026-09-05',
+    lines: [
+      '**New `/nextupdate`** — a countdown to when PS99\'s next weekly update is due. There\'s no official schedule, so this is a target (Sunday 2am AEST), not a promise.',
+      '**New `/eggodds <egg>`** — an egg\'s exact pet drop odds, straight from the game\'s own numbers rather than a guess.',
+      '**The owner console can now block specific commands, users or roles per server**, and set an expiry date on a server\'s access. An unapproved server trying to join now gets Approve/Decline buttons on the report, instead of needing its ID typed into a form by hand.',
+    ],
+  },
+  {
     version: '2.7.1',
     date: '2026-08-23',
     lines: [
