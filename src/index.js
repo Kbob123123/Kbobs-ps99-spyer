@@ -15,7 +15,13 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { runPoll, runHourlyAlerts } from './lib/tracker.js';
 import { checkAccess, describeInvocation } from './lib/owner.js';
 import { logCommand, isGuildWhitelisted } from './lib/db.js';
-import { postCommandLog, postLeaveNotice, postGuildJoinLog } from './lib/commandLog.js';
+import {
+  postCommandLog,
+  postLeaveNotice,
+  postGuildJoinLog,
+  JOIN_REQUEST_PREFIX,
+  handleJoinRequestButton,
+} from './lib/commandLog.js';
 import { announceUpdates } from './lib/botUpdates.js';
 import {
   COMPONENT_PREFIX as OWNERMENU_PREFIX,
@@ -92,9 +98,22 @@ client.on('guildCreate', async (guild) => {
 });
 
 client.on('interactionCreate', async (interaction) => {
-  // Buttons and modals from the owner menu. Routed by custom_id prefix so the
-  // menu owns its own component logic instead of this file growing a switch.
-  if (interaction.isButton() || interaction.isModalSubmit()) {
+  // Buttons, modals, and select menus from the owner menu. Routed by
+  // custom_id prefix so the menu owns its own component logic instead of this
+  // file growing a switch. isStringSelectMenu() matters here: buildServersView
+  // and buildCommandBlacklistView both use a select menu, and without this
+  // check a select submission matches neither isButton() nor isModalSubmit()
+  // and falls through unhandled — Discord shows "This interaction failed".
+  if (interaction.isButton() || interaction.isModalSubmit() || interaction.isStringSelectMenu()) {
+    if (interaction.customId?.startsWith(JOIN_REQUEST_PREFIX)) {
+      try {
+        await handleJoinRequestButton(interaction);
+      } catch (err) {
+        console.error('[joinreq] Button failed:', err);
+      }
+      return;
+    }
+
     if (!interaction.customId?.startsWith(OWNERMENU_PREFIX)) return;
     try {
       await handleOwnerMenuComponent(interaction);
@@ -125,6 +144,7 @@ client.on('interactionCreate', async (interaction) => {
     commandName: interaction.commandName,
     guildId: interaction.guildId,
     userId: interaction.user.id,
+    roleIds: interaction.member?.roles?.cache ? [...interaction.member.roles.cache.keys()] : [],
   });
 
   if (!access.allowed) {

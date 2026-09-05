@@ -1,6 +1,10 @@
-import { EmbedBuilder, PermissionFlagsBits, AuditLogEvent } from 'discord.js';
-import { getMeta, setMeta, isCommandLoggingEnabled } from './db.js';
-import { OWNER_ID } from './owner.js';
+import { EmbedBuilder, PermissionFlagsBits, AuditLogEvent, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
+import { getMeta, setMeta, isCommandLoggingEnabled, addWhitelistedGuild, countWhitelistedGuilds } from './db.js';
+import { isOwner, OWNER_ID } from './owner.js';
+
+// Prefix for the Accept/Decline buttons on an unapproved-join log post, so
+// index.js can route them here without knowing anything about the join flow.
+export const JOIN_REQUEST_PREFIX = 'joinreq:';
 
 // Where command activity is posted, Dyno-style: one message per command, in a
 // channel the owner picks. Stored rather than held in memory so a deploy does
@@ -157,12 +161,79 @@ export async function postGuildJoinLog(client, guild, { approved, onStartup = fa
 
     if (guild.iconURL()) embed.setThumbnail(guild.iconURL());
 
-    await channel.send({ embeds: [embed] });
+    // Accept/Decline only on the unapproved cases — an approved join needs no
+    // decision, there is nothing to acknowledge. By the time this posts the
+    // bot has typically already left (enforceGuildWhitelist logs before it
+    // leaves, but the owner reads this later), so Accept can only whitelist
+    // for NEXT time — it can't reopen the door on its own. Said plainly in the
+    // button's own follow-up rather than left to be discovered.
+    const components = approved
+      ? []
+      : [
+          new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+              .setCustomId(`${JOIN_REQUEST_PREFIX}accept:${guild.id}`)
+              .setLabel('Approve')
+              .setStyle(ButtonStyle.Success)
+              .setEmoji('✅'),
+            new ButtonBuilder()
+              .setCustomId(`${JOIN_REQUEST_PREFIX}decline:${guild.id}`)
+              .setLabel('Decline')
+              .setStyle(ButtonStyle.Secondary)
+              .setEmoji('✖️')
+          ),
+        ];
+
+    await channel.send({ embeds: [embed], components });
   } catch (err) {
     console.warn('[log] Could not report a server join:', err.message);
   }
 
   return invite;
+}
+
+/**
+ * Handle a click on the Approve/Decline buttons under an unapproved-join log
+ * post — the "acknowledgements" shortcut for what /ownermenu's whitelist modal
+ * already does by hand.
+ *
+ * Approve whitelists the guild for next time; it cannot make the bot rejoin by
+ * itself (it has no invite to use), so the reply says so rather than implying
+ * the server is back. Decline just records that the owner saw it — the guild
+ * was never whitelisted, so there's nothing to undo.
+ */
+export async function handleJoinRequestButton(interaction) {
+  if (!isOwner(interaction.user.id)) {
+    await interaction.reply({ content: '🔒 Only the bot owner can act on this.', ephemeral: true }).catch(() => {});
+    return;
+  }
+
+  const rest = interaction.customId.slice(JOIN_REQUEST_PREFIX.length);
+  const [verb, guildId] = rest.split(':');
+
+  const disabledRow = new ActionRowBuilder().addComponents(
+    ButtonBuilder.from(interaction.message.components[0].components[0]).setDisabled(true),
+    ButtonBuilder.from(interaction.message.components[0].components[1]).setDisabled(true)
+  );
+
+  if (verb === 'accept') {
+    const wasEmpty = countWhitelistedGuilds() === 0;
+    addWhitelistedGuild({ guildId, note: 'approved via join-request button', addedBy: interaction.user.id });
+
+    await interaction.update({ components: [disabledRow] });
+    await interaction.followUp({
+      content:
+        `✅ Whitelisted \`${guildId}\`.` +
+        (wasEmpty ? '\n⚠️ That was the first entry — every other server is now blocked.' : '') +
+        '\n\n_The bot has already left this server (or was never able to join), so this only ' +
+        'approves it for next time — someone in that server needs to invite it again._',
+      ephemeral: true,
+    });
+    return;
+  }
+
+  await interaction.update({ components: [disabledRow] });
+  await interaction.followUp({ content: `✖️ Acknowledged — \`${guildId}\` stays blocked.`, ephemeral: true });
 }
 
 /**

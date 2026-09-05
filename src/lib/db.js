@@ -215,6 +215,32 @@ CREATE TABLE IF NOT EXISTS command_log (
 
 CREATE INDEX IF NOT EXISTS idx_command_log_ts ON command_log (ts DESC);
 CREATE INDEX IF NOT EXISTS idx_command_log_guild ON command_log (guild_id, ts DESC);
+
+-- Per-guild access controls, managed by the owner via /ownermenu. All three
+-- are additional restrictions layered on TOP of guild_whitelist — a guild
+-- still has to be whitelisted first; these narrow what's allowed within it.
+CREATE TABLE IF NOT EXISTS command_blacklist (
+  guild_id TEXT NOT NULL,
+  command  TEXT NOT NULL,
+  PRIMARY KEY (guild_id, command)
+);
+
+CREATE TABLE IF NOT EXISTS user_blacklist (
+  guild_id TEXT NOT NULL,
+  user_id  TEXT NOT NULL,
+  note     TEXT,
+  added_by TEXT,
+  added_at INTEGER NOT NULL,
+  PRIMARY KEY (guild_id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS role_blacklist (
+  guild_id TEXT NOT NULL,
+  role_id  TEXT NOT NULL,
+  added_by TEXT,
+  added_at INTEGER NOT NULL,
+  PRIMARY KEY (guild_id, role_id)
+);
 `);
 
 /* ---------------------------------------------------------------------------
@@ -411,12 +437,22 @@ export function countRows(metric) {
  * Guild whitelist and command log (owner tooling)
  * ------------------------------------------------------------------------- */
 
-export function addWhitelistedGuild({ guildId, note, addedBy }) {
+// expiresAt is a unix-seconds timestamp, or null for "never expires". Adding a
+// server again (re-running /ownermenu's add) without an expiry clears any
+// expiry the row previously had, matching how `note` already gets overwritten
+// on conflict rather than merged.
+export function addWhitelistedGuild({ guildId, note, addedBy, expiresAt = null }) {
   db.prepare(`
-    INSERT INTO guild_whitelist (guild_id, note, added_by, added_at)
-    VALUES (?, ?, ?, ?)
-    ON CONFLICT(guild_id) DO UPDATE SET note = excluded.note
-  `).run(String(guildId), note ?? null, addedBy ? String(addedBy) : null, Math.floor(Date.now() / 1000));
+    INSERT INTO guild_whitelist (guild_id, note, added_by, added_at, expires_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(guild_id) DO UPDATE SET note = excluded.note, expires_at = excluded.expires_at
+  `).run(String(guildId), note ?? null, addedBy ? String(addedBy) : null, Math.floor(Date.now() / 1000), expiresAt);
+}
+
+/** Set (or clear, with null) an existing whitelist entry's expiry without touching its note. */
+export function setGuildExpiry(guildId, expiresAt) {
+  return db.prepare(`UPDATE guild_whitelist SET expires_at = ? WHERE guild_id = ?`).run(expiresAt, String(guildId))
+    .changes > 0;
 }
 
 /** Returns true if a row was actually removed. */
@@ -432,9 +468,113 @@ export function countWhitelistedGuilds() {
   return db.prepare(`SELECT COUNT(*) AS n FROM guild_whitelist`).get().n;
 }
 
+/**
+ * Whitelisted AND not expired. An expired entry is treated as absent rather
+ * than being deleted here — deleting on a read would make a read-only check
+ * mutate the database, and the owner still wants to see "expired 3 days ago"
+ * in /ownermenu rather than the row silently vanishing.
+ */
 export function isGuildWhitelisted(guildId) {
   if (!guildId) return false;
-  return !!db.prepare(`SELECT 1 FROM guild_whitelist WHERE guild_id = ?`).get(String(guildId));
+  const row = db.prepare(`SELECT expires_at FROM guild_whitelist WHERE guild_id = ?`).get(String(guildId));
+  if (!row) return false;
+  if (row.expires_at != null && row.expires_at <= Math.floor(Date.now() / 1000)) return false;
+  return true;
+}
+
+/* ---------------------------------------------------------------------------
+ * Per-guild command / user / role blacklists — layered on top of the
+ * whitelist above. A guild must already be whitelisted to reach these checks
+ * at all; they narrow what's allowed within an otherwise-approved guild.
+ * ------------------------------------------------------------------------- */
+
+export function addCommandBlacklist(guildId, command) {
+  db.prepare(`INSERT OR IGNORE INTO command_blacklist (guild_id, command) VALUES (?, ?)`).run(
+    String(guildId),
+    command
+  );
+}
+
+export function removeCommandBlacklist(guildId, command) {
+  return db
+    .prepare(`DELETE FROM command_blacklist WHERE guild_id = ? AND command = ?`)
+    .run(String(guildId), command).changes > 0;
+}
+
+/** Replace a guild's whole command blacklist with exactly this set — used by the multi-select UI. */
+export function setCommandBlacklist(guildId, commands) {
+  db.exec('BEGIN');
+  try {
+    db.prepare(`DELETE FROM command_blacklist WHERE guild_id = ?`).run(String(guildId));
+    for (const command of commands) addCommandBlacklist(guildId, command);
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+export function getCommandBlacklist(guildId) {
+  return db
+    .prepare(`SELECT command FROM command_blacklist WHERE guild_id = ?`)
+    .all(String(guildId))
+    .map((r) => r.command);
+}
+
+export function isCommandBlacklisted(guildId, command) {
+  return !!db
+    .prepare(`SELECT 1 FROM command_blacklist WHERE guild_id = ? AND command = ?`)
+    .get(String(guildId), command);
+}
+
+export function addUserBlacklist({ guildId, userId, note, addedBy }) {
+  db.prepare(`
+    INSERT INTO user_blacklist (guild_id, user_id, note, added_by, added_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(guild_id, user_id) DO UPDATE SET note = excluded.note
+  `).run(String(guildId), String(userId), note ?? null, addedBy ? String(addedBy) : null, Math.floor(Date.now() / 1000));
+}
+
+export function removeUserBlacklist(guildId, userId) {
+  return db
+    .prepare(`DELETE FROM user_blacklist WHERE guild_id = ? AND user_id = ?`)
+    .run(String(guildId), String(userId)).changes > 0;
+}
+
+export function getUserBlacklist(guildId) {
+  return db.prepare(`SELECT * FROM user_blacklist WHERE guild_id = ? ORDER BY added_at ASC`).all(String(guildId));
+}
+
+export function isUserBlacklisted(guildId, userId) {
+  return !!db
+    .prepare(`SELECT 1 FROM user_blacklist WHERE guild_id = ? AND user_id = ?`)
+    .get(String(guildId), String(userId));
+}
+
+export function addRoleBlacklist({ guildId, roleId, addedBy }) {
+  db.prepare(`
+    INSERT OR IGNORE INTO role_blacklist (guild_id, role_id, added_by, added_at)
+    VALUES (?, ?, ?, ?)
+  `).run(String(guildId), String(roleId), addedBy ? String(addedBy) : null, Math.floor(Date.now() / 1000));
+}
+
+export function removeRoleBlacklist(guildId, roleId) {
+  return db
+    .prepare(`DELETE FROM role_blacklist WHERE guild_id = ? AND role_id = ?`)
+    .run(String(guildId), String(roleId)).changes > 0;
+}
+
+export function getRoleBlacklist(guildId) {
+  return db.prepare(`SELECT * FROM role_blacklist WHERE guild_id = ? ORDER BY added_at ASC`).all(String(guildId));
+}
+
+/** True if ANY of the member's role ids is blacklisted in this guild. */
+export function isAnyRoleBlacklisted(guildId, roleIds) {
+  if (!roleIds || roleIds.length === 0) return false;
+  const rows = getRoleBlacklist(guildId);
+  if (rows.length === 0) return false;
+  const blacklisted = new Set(rows.map((r) => r.role_id));
+  return roleIds.some((id) => blacklisted.has(String(id)));
 }
 
 const COMMAND_LOG_MAX_ROWS = 20000;
@@ -623,6 +763,11 @@ function addColumnIfMissing(table, column, definition) {
 // Existing rows default to enabled, so this migration cannot silently switch
 // off alerts that were working before the upgrade.
 addColumnIfMissing('channels', 'enabled', 'INTEGER NOT NULL DEFAULT 1');
+
+// Paid/temporary access: an optional expiry on a whitelist entry. NULL means
+// "never expires" — every entry created before this column existed reads as
+// permanent, which is the only safe default for a migration.
+addColumnIfMissing('guild_whitelist', 'expires_at', 'INTEGER');
 
 /**
  * Rename the old combined 'newpet' channel to 'newitem'.

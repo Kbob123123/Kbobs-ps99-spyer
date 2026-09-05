@@ -16,10 +16,19 @@ import {
   getWhitelistedGuilds,
   countWhitelistedGuilds,
   isGuildWhitelisted,
+  setGuildExpiry,
   getCommandLog,
   getCommandLogSummary,
   isCommandLoggingEnabled,
   setCommandLoggingEnabled,
+  getCommandBlacklist,
+  setCommandBlacklist,
+  getUserBlacklist,
+  addUserBlacklist,
+  removeUserBlacklist,
+  getRoleBlacklist,
+  addRoleBlacklist,
+  removeRoleBlacklist,
 } from '../lib/db.js';
 import { isOwner, OWNER_ID } from '../lib/owner.js';
 import { getLogChannelId, setLogChannelId, clearLogChannel, postLeaveNotice, createGuildInvite } from '../lib/commandLog.js';
@@ -76,9 +85,25 @@ export async function handleComponent(interaction) {
   if (action === 'whitelist_add') return showGuildModal(interaction, 'add');
   if (action === 'whitelist_remove') return showGuildModal(interaction, 'remove');
   if (action === 'set_log_channel') return showLogChannelModal(interaction);
+  if (action.startsWith('expiry_ask:')) return showExpiryModal(interaction, action.slice('expiry_ask:'.length));
+  if (action.startsWith('userbl_add:')) return showUserBlacklistModal(interaction, action.slice('userbl_add:'.length), 'add');
+  if (action.startsWith('userbl_remove:'))
+    return showUserBlacklistModal(interaction, action.slice('userbl_remove:'.length), 'remove');
+  if (action.startsWith('rolebl_add:')) return showRoleBlacklistModal(interaction, action.slice('rolebl_add:'.length), 'add');
+  if (action.startsWith('rolebl_remove:'))
+    return showRoleBlacklistModal(interaction, action.slice('rolebl_remove:'.length), 'remove');
 
   if (interaction.isModalSubmit()) {
     if (action === 'modal_logchannel') return handleLogChannelModal(interaction);
+    if (action.startsWith('expiry_modal:')) return handleExpiryModal(interaction, action.slice('expiry_modal:'.length));
+    if (action.startsWith('userbl_modal_add:'))
+      return handleUserBlacklistModal(interaction, action.slice('userbl_modal_add:'.length), 'add');
+    if (action.startsWith('userbl_modal_remove:'))
+      return handleUserBlacklistModal(interaction, action.slice('userbl_modal_remove:'.length), 'remove');
+    if (action.startsWith('rolebl_modal_add:'))
+      return handleRoleBlacklistModal(interaction, action.slice('rolebl_modal_add:'.length), 'add');
+    if (action.startsWith('rolebl_modal_remove:'))
+      return handleRoleBlacklistModal(interaction, action.slice('rolebl_modal_remove:'.length), 'remove');
     return handleGuildModal(interaction);
   }
 
@@ -86,6 +111,16 @@ export async function handleComponent(interaction) {
   if (action === 'pick_guild') {
     await interaction.deferUpdate();
     return interaction.editReply(buildGuildView(interaction.client, interaction.values[0]));
+  }
+
+  // The command-blacklist multi-select: replaces the guild's whole blacklist
+  // with exactly what's checked, same "set" semantics as a settings toggle
+  // rather than an incremental add/remove.
+  if (action.startsWith('cmdbl_set:')) {
+    const guildId = action.slice('cmdbl_set:'.length);
+    await interaction.deferUpdate();
+    setCommandBlacklist(guildId, interaction.values);
+    return interaction.editReply(buildCommandBlacklistView(interaction.client, guildId));
   }
 
   await interaction.deferUpdate();
@@ -105,6 +140,10 @@ export async function handleComponent(interaction) {
   const [verb, guildId] = action.split(':');
 
   if (verb === 'guild') return interaction.editReply(buildGuildView(interaction.client, guildId));
+
+  if (verb === 'cmdbl') return interaction.editReply(buildCommandBlacklistView(interaction.client, guildId));
+  if (verb === 'userbl') return interaction.editReply(buildUserBlacklistView(interaction.client, guildId));
+  if (verb === 'rolebl') return interaction.editReply(buildRoleBlacklistView(interaction.client, guildId));
 
   if (verb === 'wl') {
     if (isGuildWhitelisted(guildId)) removeWhitelistedGuild(guildId);
@@ -404,6 +443,11 @@ function buildGuildView(client, guildId) {
 
   const whitelisted = isGuildWhitelisted(guildId);
   const enforcing = countWhitelistedGuilds() > 0;
+  const wlRow = getWhitelistedGuilds().find((r) => r.guild_id === guildId);
+  const expiresAt = wlRow?.expires_at ?? null;
+  const cmdBlCount = getCommandBlacklist(guildId).length;
+  const userBlCount = getUserBlacklist(guildId).length;
+  const roleBlCount = getRoleBlacklist(guildId).length;
 
   const embed = new EmbedBuilder()
     .setTitle(`🖥️ ${guild.name}`)
@@ -413,14 +457,24 @@ function buildGuildView(client, guildId) {
         `🆔 \`${guild.id}\``,
         `👥 **Members:** ${(guild.memberCount ?? 0).toLocaleString()}`,
         `📅 **Bot joined:** ${guild.joinedTimestamp ? `<t:${Math.floor(guild.joinedTimestamp / 1000)}:R>` : 'unknown'}`,
-        `🔐 **Access:** ${!enforcing ? '⚪ allowed (whitelist empty)' : whitelisted ? '✅ whitelisted' : '⛔ blocked'}`,
+        `🔐 **Access:** ${!enforcing ? '⚪ allowed (whitelist empty)' : whitelisted ? '✅ whitelisted' : '⛔ blocked'}` +
+          (whitelisted && expiresAt
+            ? expiresAt <= Math.floor(Date.now() / 1000)
+              ? ' · ⚠️ **expired** <t:' + expiresAt + ':R>'
+              : ` · expires <t:${expiresAt}:R>`
+            : whitelisted
+              ? ' · never expires'
+              : ''),
+        `🚫 **Command blacklist:** ${cmdBlCount} disabled`,
+        `👤 **User blacklist:** ${userBlCount} blocked`,
+        `🎭 **Role blacklist:** ${roleBlCount} blocked`,
       ].join('\n')
     )
     .setTimestamp();
 
   if (guild.iconURL()) embed.setThumbnail(guild.iconURL());
 
-  const row = new ActionRowBuilder().addComponents(
+  const row1 = new ActionRowBuilder().addComponents(
     button(`invite:${guildId}`, 'Get invite', ButtonStyle.Primary, '🔗'),
     button(
       `wl:${guildId}`,
@@ -428,11 +482,18 @@ function buildGuildView(client, guildId) {
       whitelisted ? ButtonStyle.Secondary : ButtonStyle.Success,
       whitelisted ? '⛔' : '✅'
     ),
-    button(`leaveask:${guildId}`, 'Remove bot', ButtonStyle.Danger, '🚪'),
+    button(`expiry_ask:${guildId}`, 'Set expiry', ButtonStyle.Secondary, '⏳'),
+    button(`leaveask:${guildId}`, 'Remove bot', ButtonStyle.Danger, '🚪')
+  );
+
+  const row2 = new ActionRowBuilder().addComponents(
+    button(`cmdbl:${guildId}`, 'Command blacklist', ButtonStyle.Secondary, '🚫'),
+    button(`userbl:${guildId}`, 'User blacklist', ButtonStyle.Secondary, '👤'),
+    button(`rolebl:${guildId}`, 'Role blacklist', ButtonStyle.Secondary, '🎭'),
     button('servers', 'Back', ButtonStyle.Secondary, '◀️')
   );
 
-  return { content: '', embeds: [embed], components: [row] };
+  return { content: '', embeds: [embed], components: [row1, row2] };
 }
 
 /**
@@ -681,6 +742,304 @@ async function handleGuildModal(interaction) {
       ? `🛑 Removed \`${guildId}\`.` +
         (nowEmpty ? '\n\n⚠️ The whitelist is now empty, so **every server is allowed again**.' : '')
       : `\`${guildId}\` wasn't on the whitelist.`,
+    ephemeral: true,
+  });
+}
+
+/* ---------------------------------------------------------------------------
+ * Paid/temporary access — an expiry on a whitelist entry
+ * ------------------------------------------------------------------------- */
+
+/**
+ * "30d" / "6w" / "3m" / "1y" -> seconds from now. A bare number is days. Empty
+ * or "never" clears the expiry. Months and years are fixed 30/365-day
+ * approximations — good enough for "about a month", wrong to the day for
+ * billing, which is exactly why #18 stayed "not a technical decision": this
+ * picks a duration, it does not touch payment.
+ */
+function parseDuration(raw) {
+  const s = raw.trim().toLowerCase();
+  if (s === '' || s === 'never' || s === 'none') return { seconds: null, ok: true };
+
+  const match = s.match(/^(\d+)\s*(d|w|m|y)?$/);
+  if (!match) return { ok: false };
+
+  const n = Number(match[1]);
+  const unit = match[2] ?? 'd';
+  const perUnitDays = { d: 1, w: 7, m: 30, y: 365 };
+  const days = n * perUnitDays[unit];
+  return { seconds: days * 86400, ok: true };
+}
+
+async function showExpiryModal(interaction, guildId) {
+  const row = getWhitelistedGuilds().find((r) => r.guild_id === guildId);
+  const current = row?.expires_at
+    ? row.expires_at <= Math.floor(Date.now() / 1000)
+      ? 'expired'
+      : `expires <t:${row.expires_at}:R>`
+    : 'never expires';
+
+  const modal = new ModalBuilder()
+    .setCustomId(`${COMPONENT_PREFIX}expiry_modal:${guildId}`)
+    .setTitle('Set access expiry')
+    .addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId('duration')
+          .setLabel(`Duration (currently: ${current})`)
+          .setPlaceholder('e.g. 30d, 2w, 1m, 1y — blank or "never" to clear')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(false)
+      )
+    );
+
+  await interaction.showModal(modal);
+}
+
+async function handleExpiryModal(interaction, guildId) {
+  const raw = interaction.fields.getTextInputValue('duration');
+  const parsed = parseDuration(raw);
+
+  if (!parsed.ok) {
+    await interaction.reply({
+      content: `❌ Couldn't read \`${raw}\` as a duration. Try e.g. \`30d\`, \`2w\`, \`1m\`, \`1y\`, or leave it blank for "never".`,
+      ephemeral: true,
+    });
+    return;
+  }
+
+  if (!isGuildWhitelisted(guildId) && countWhitelistedGuilds() > 0) {
+    // Setting an expiry on a guild that isn't whitelisted (and enforcement is
+    // on) would silently do nothing useful — whitelist it first so the expiry
+    // has something to expire FROM.
+    await interaction.reply({
+      content: `❌ \`${guildId}\` isn't whitelisted, so there's nothing to set an expiry on. Whitelist it first.`,
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const expiresAt = parsed.seconds == null ? null : Math.floor(Date.now() / 1000) + parsed.seconds;
+  setGuildExpiry(guildId, expiresAt);
+
+  await interaction.reply({
+    content: expiresAt
+      ? `⏳ \`${guildId}\` now expires <t:${expiresAt}:R>.`
+      : `♾️ \`${guildId}\` no longer expires.`,
+    ephemeral: true,
+  });
+}
+
+/* ---------------------------------------------------------------------------
+ * Command blacklist — per guild, via a multi-select
+ * ------------------------------------------------------------------------- */
+
+function buildCommandBlacklistView(client, guildId) {
+  const guild = client.guilds.cache.get(guildId);
+  const blacklisted = new Set(getCommandBlacklist(guildId));
+
+  // Every loaded command, same source /help reads from, so this can never
+  // list a command that doesn't actually exist to disable.
+  const commands = [...client.commands.values()].map((m) => m.data.name).sort();
+
+  const embed = new EmbedBuilder()
+    .setTitle(`🚫 Command blacklist — ${guild?.name ?? guildId}`)
+    .setColor(blacklisted.size > 0 ? 0xc98500 : 0x5865f2)
+    .setDescription(
+      blacklisted.size > 0
+        ? `**${blacklisted.size}** command(s) disabled here: ${[...blacklisted].map((c) => `\`/${c}\``).join(', ')}`
+        : '_Nothing disabled — every loaded command works here._'
+    )
+    .setFooter({ text: 'Check the commands to disable, then submit. This replaces the whole list each time.' })
+    .setTimestamp();
+
+  const components = [];
+
+  if (commands.length > 0) {
+    // Discord caps a select at 25 options. This bot has well under that many
+    // commands; a future bot with more would need paging, same as the server
+    // picker's own comment about the 25-option ceiling.
+    const options = commands.slice(0, 25).map((name) => ({
+      label: `/${name}`,
+      value: name,
+      default: blacklisted.has(name),
+    }));
+
+    components.push(
+      new ActionRowBuilder().addComponents(
+        new StringSelectMenuBuilder()
+          .setCustomId(`${COMPONENT_PREFIX}cmdbl_set:${guildId}`)
+          .setPlaceholder('Pick commands to disable here…')
+          .setMinValues(0)
+          .setMaxValues(options.length)
+          .addOptions(options)
+      )
+    );
+  }
+
+  components.push(
+    new ActionRowBuilder().addComponents(button(`guild:${guildId}`, 'Back', ButtonStyle.Secondary, '◀️'))
+  );
+
+  return { content: '', embeds: [embed], components };
+}
+
+/* ---------------------------------------------------------------------------
+ * User blacklist — per guild, via a modal (same pattern as the whitelist)
+ * ------------------------------------------------------------------------- */
+
+function buildUserBlacklistView(client, guildId) {
+  const guild = client.guilds.cache.get(guildId);
+  const rows = getUserBlacklist(guildId);
+
+  const lines = rows.map((r) => `• <@${r.user_id}> · \`${r.user_id}\`${r.note ? ` · ${r.note}` : ''}`);
+
+  const embed = new EmbedBuilder()
+    .setTitle(`👤 User blacklist — ${guild?.name ?? guildId}`)
+    .setColor(rows.length > 0 ? 0xc98500 : 0x5865f2)
+    .setDescription(
+      rows.length > 0 ? capToFieldLimit(lines, '_None._', DESCRIPTION_LIMIT) : '_Nobody blocked in this server._'
+    )
+    .setTimestamp();
+
+  const controls = new ActionRowBuilder().addComponents(
+    button(`userbl_add:${guildId}`, 'Block a user', ButtonStyle.Danger, '➕'),
+    button(`userbl_remove:${guildId}`, 'Unblock a user', ButtonStyle.Success, '➖'),
+    button(`guild:${guildId}`, 'Back', ButtonStyle.Secondary, '◀️')
+  );
+
+  return { content: '', embeds: [embed], components: [controls] };
+}
+
+async function showUserBlacklistModal(interaction, guildId, mode) {
+  const modal = new ModalBuilder()
+    .setCustomId(`${COMPONENT_PREFIX}userbl_modal_${mode}:${guildId}`)
+    .setTitle(mode === 'add' ? 'Block a user' : 'Unblock a user')
+    .addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId('userId')
+          .setLabel('Discord user ID')
+          .setPlaceholder('right-click their name → Copy User ID')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+      )
+    );
+
+  if (mode === 'add') {
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId('note')
+          .setLabel('Note (optional)')
+          .setPlaceholder('why')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(false)
+      )
+    );
+  }
+
+  await interaction.showModal(modal);
+}
+
+async function handleUserBlacklistModal(interaction, guildId, mode) {
+  const userId = interaction.fields.getTextInputValue('userId').trim();
+
+  if (!/^\d{15,25}$/.test(userId)) {
+    await interaction.reply({
+      content: `❌ \`${userId}\` doesn't look like a user ID — those are all digits.\n_Enable Developer Mode, then right-click the user → Copy User ID._`,
+      ephemeral: true,
+    });
+    return;
+  }
+
+  if (mode === 'add') {
+    const note = interaction.fields.fields.has('note')
+      ? interaction.fields.getTextInputValue('note').trim() || null
+      : null;
+    addUserBlacklist({ guildId, userId, note, addedBy: interaction.user.id });
+    await interaction.reply({ content: `🔒 Blocked <@${userId}> in \`${guildId}\`.`, ephemeral: true });
+    return;
+  }
+
+  const removed = removeUserBlacklist(guildId, userId);
+  await interaction.reply({
+    content: removed ? `✅ Unblocked <@${userId}>.` : `\`${userId}\` wasn't blocked there.`,
+    ephemeral: true,
+  });
+}
+
+/* ---------------------------------------------------------------------------
+ * Role blacklist — per guild, via a modal
+ * ------------------------------------------------------------------------- */
+
+function buildRoleBlacklistView(client, guildId) {
+  const guild = client.guilds.cache.get(guildId);
+  const rows = getRoleBlacklist(guildId);
+
+  const lines = rows.map((r) => {
+    const name = guild?.roles.cache.get(r.role_id)?.name;
+    return `• ${name ? `**@${name}**` : '_unknown role_'} · \`${r.role_id}\``;
+  });
+
+  const embed = new EmbedBuilder()
+    .setTitle(`🎭 Role blacklist — ${guild?.name ?? guildId}`)
+    .setColor(rows.length > 0 ? 0xc98500 : 0x5865f2)
+    .setDescription(
+      rows.length > 0
+        ? capToFieldLimit(lines, '_None._', DESCRIPTION_LIMIT)
+        : '_No role blocked in this server._'
+    )
+    .setFooter({ text: 'Anyone holding a blocked role is denied, even with an otherwise-fine account.' })
+    .setTimestamp();
+
+  const controls = new ActionRowBuilder().addComponents(
+    button(`rolebl_add:${guildId}`, 'Block a role', ButtonStyle.Danger, '➕'),
+    button(`rolebl_remove:${guildId}`, 'Unblock a role', ButtonStyle.Success, '➖'),
+    button(`guild:${guildId}`, 'Back', ButtonStyle.Secondary, '◀️')
+  );
+
+  return { content: '', embeds: [embed], components: [controls] };
+}
+
+async function showRoleBlacklistModal(interaction, guildId, mode) {
+  const modal = new ModalBuilder()
+    .setCustomId(`${COMPONENT_PREFIX}rolebl_modal_${mode}:${guildId}`)
+    .setTitle(mode === 'add' ? 'Block a role' : 'Unblock a role')
+    .addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId('roleId')
+          .setLabel('Role ID')
+          .setPlaceholder('right-click the role → Copy Role ID')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+      )
+    );
+
+  await interaction.showModal(modal);
+}
+
+async function handleRoleBlacklistModal(interaction, guildId, mode) {
+  const roleId = interaction.fields.getTextInputValue('roleId').trim();
+
+  if (!/^\d{15,25}$/.test(roleId)) {
+    await interaction.reply({
+      content: `❌ \`${roleId}\` doesn't look like a role ID — those are all digits.\n_Enable Developer Mode, then right-click the role → Copy Role ID._`,
+      ephemeral: true,
+    });
+    return;
+  }
+
+  if (mode === 'add') {
+    addRoleBlacklist({ guildId, roleId, addedBy: interaction.user.id });
+    await interaction.reply({ content: `🔒 Blocked role \`${roleId}\` in \`${guildId}\`.`, ephemeral: true });
+    return;
+  }
+
+  const removed = removeRoleBlacklist(guildId, roleId);
+  await interaction.reply({
+    content: removed ? `✅ Unblocked role \`${roleId}\`.` : `\`${roleId}\` wasn't blocked there.`,
     ephemeral: true,
   });
 }

@@ -1,4 +1,10 @@
-import { countWhitelistedGuilds, isGuildWhitelisted } from './db.js';
+import {
+  countWhitelistedGuilds,
+  isGuildWhitelisted,
+  isCommandBlacklisted,
+  isUserBlacklisted,
+  isAnyRoleBlacklisted,
+} from './db.js';
 
 // Who owns this bot. Read from the environment rather than hardcoded so a
 // wrong value is a one-variable fix instead of a redeploy — which matters
@@ -23,8 +29,14 @@ export function isOwner(userId) {
  * The owner is never blocked, by their user ID rather than by which server
  * they are in, so an empty or misconfigured whitelist can never lock them out
  * of /ownermenu — the one command needed to fix it.
+ *
+ * Beyond the whitelist, three more checks narrow what's allowed WITHIN an
+ * already-approved guild: a command blacklist (some commands disabled here),
+ * a user blacklist (this person specifically blocked), and a role blacklist
+ * (anyone holding a flagged role blocked). All three are per-guild and only
+ * ever reached once the guild itself has passed the whitelist check.
  */
-export function checkAccess({ commandName, guildId, userId }) {
+export function checkAccess({ commandName, guildId, userId, roleIds = [] }) {
   if (isOwner(userId)) return { allowed: true };
 
   // A DM has no guild to check. Only the owner gets to use the bot there;
@@ -36,15 +48,29 @@ export function checkAccess({ commandName, guildId, userId }) {
     };
   }
 
-  if (isGuildWhitelisted(guildId)) return { allowed: true };
+  if (!isGuildWhitelisted(guildId)) {
+    return {
+      allowed: false,
+      reason:
+        "🔒 This server isn't approved to use this bot.\n" +
+        "Ask the bot owner to add it — they'll need this server's ID: " +
+        `\`${guildId}\`.`,
+    };
+  }
 
-  return {
-    allowed: false,
-    reason:
-      "🔒 This server isn't approved to use this bot.\n" +
-      "Ask the bot owner to add it — they'll need this server's ID: " +
-      `\`${guildId}\`.`,
-  };
+  if (isUserBlacklisted(guildId, userId)) {
+    return { allowed: false, reason: "🔒 You've been blocked from using this bot in this server." };
+  }
+
+  if (isAnyRoleBlacklisted(guildId, roleIds)) {
+    return { allowed: false, reason: '🔒 A role you hold is blocked from using this bot in this server.' };
+  }
+
+  if (commandName && isCommandBlacklisted(guildId, commandName)) {
+    return { allowed: false, reason: `🔒 \`/${commandName}\` is disabled in this server.` };
+  }
+
+  return { allowed: true };
 }
 
 /** Compact one-line description of a command invocation, for the log. */
